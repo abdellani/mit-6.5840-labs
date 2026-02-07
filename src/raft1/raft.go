@@ -409,13 +409,19 @@ type AppendEntryReply struct {
 
 func (rf *Raft) BecomeFollower(term int) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if rf.Status != STATUS_FOLLOWER {
 		rf.Log("downgrading to follower")
 	}
+
+	if term < rf.CurrentTerm {
+		return
+	}
 	rf.Status = STATUS_FOLLOWER
-	rf.VotedFor = -1
+	if term > rf.CurrentTerm {
+		rf.VotedFor = -1
+	}
 	rf.CurrentTerm = term
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) PromoteToLeader() {
@@ -433,10 +439,10 @@ func (rf *Raft) PromoteToLeader() {
 func (rf *Raft) TransitToCandidate() int {
 	rf.Log("becoming a candidate")
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.Status = STATUS_CANDIDATE
 	rf.VotedFor = rf.me
 	rf.CurrentTerm++
-	rf.mu.Unlock()
 	return rf.CurrentTerm
 }
 
@@ -470,5 +476,5 @@ func (rf *Raft) UpdateHeartBeatTimestamp() {
 }
 
 func (rf *Raft) Log(message string) {
-	fmt.Println(rf.me, ":", message)
+	// fmt.Println(rf.me, ":", message)
 }
