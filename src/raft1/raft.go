@@ -43,6 +43,8 @@ type Raft struct {
 	LastHeartBeatTimestamp int64
 	CurrentTerm            int
 	VotedFor               int
+	NextIndex              []int
+	MatchIndex             []int
 	Logs                   Logs
 }
 
@@ -312,9 +314,15 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 	rf := &Raft{
+		NextIndex:  make([]int, len(peers)),
+		MatchIndex: make([]int, len(peers)),
 		Logs: Logs{
 			Cursor: -1,
 		},
+	}
+	for i := range len(peers) {
+		rf.NextIndex[i] = -1
+		rf.MatchIndex[i] = -1
 	}
 	rf.peers = peers
 	rf.persister = persister
@@ -327,7 +335,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	// start ticker goroutine to start elections
-	go rf.HeartBeatsLoop()
 	go rf.ticker()
 
 	return rf
@@ -364,8 +371,11 @@ func (rf *Raft) RunVote() {
 			reply := RequestVoteReply{}
 
 			rf.Log(fmt.Sprintf("term: %d ; contacting %d to request a vote", voteTerm, i))
-			rf.sendRequestVote(i, &arg, &reply)
+			ok := rf.sendRequestVote(i, &arg, &reply)
 			rf.Log(fmt.Sprintf("term: %d ; done with %d", voteTerm, i))
+			if !ok {
+				return
+			}
 			replies <- reply
 		}(i)
 	}
@@ -423,15 +433,17 @@ func (rf *Raft) ShouldTriggerVote() bool {
 	return (rf.Status == STATUS_FOLLOWER || rf.Status == STATUS_CANDIDATE) && (now-rf.LastHeartBeatTimestamp) > 300
 }
 
-func (rf *Raft) HeartBeatsLoop() {
+func (rf *Raft) HeartBeatsLoop(term int) {
 	for {
 		rf.mu.Lock()
 		currentTerm := rf.CurrentTerm
 		currentStatus := rf.Status
 		rf.mu.Unlock()
+		if currentTerm != term {
+			return
+		}
 		if currentStatus != STATUS_LEADER {
-			time.Sleep(10 * time.Millisecond)
-			continue
+			return
 		}
 		rf.Log("sending  heartbeats")
 		var wg sync.WaitGroup
@@ -447,7 +459,10 @@ func (rf *Raft) HeartBeatsLoop() {
 					LeaderId: rf.me,
 				}
 				reply := AppendEntryReply{}
-				rf.SendAppendEntry(server, &arg, &reply)
+				ok := rf.SendAppendEntry(server, &arg, &reply)
+				if !ok {
+					return
+				}
 				if reply.Term > currentTerm {
 					rf.mu.Lock()
 					rf._becomeFollower(reply.Term)
@@ -455,6 +470,7 @@ func (rf *Raft) HeartBeatsLoop() {
 				}
 			}(i)
 		}
+		//TODO what if some RPC calls take too much time? the heartbeat loop will become solwer.
 		wg.Wait()
 		time.Sleep(100 * time.Millisecond)
 
@@ -494,6 +510,7 @@ func (rf *Raft) _promoteToLeader() {
 	rf.Log("becoming leader !")
 	rf.Status = STATUS_LEADER
 	rf.VotedFor = -1
+	go rf.HeartBeatsLoop(rf.CurrentTerm)
 }
 
 func (rf *Raft) _transitToCandidate() {
