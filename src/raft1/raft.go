@@ -43,6 +43,17 @@ type Raft struct {
 	LastHeartBeatTimestamp int64
 	CurrentTerm            int
 	VotedFor               int
+	Logs                   Logs
+}
+
+type Log struct {
+	Term    int
+	Command any
+}
+
+type Logs struct {
+	Logs   []Log
+	Cursor int
 }
 
 // return currentTerm and whether this server
@@ -113,8 +124,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
-	Term        int
-	CandidateId int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
@@ -129,47 +142,73 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.Log(fmt.Sprintf(" receiving vote request from %d", args.CandidateId))
 	rf.Log(fmt.Sprintf(" current term %d, candidate term %d", rf.CurrentTerm, args.Term))
-	rf.mu.Unlock()
 
-	rf.mu.Lock()
 	if rf.CurrentTerm > args.Term {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 		rf.Log(fmt.Sprintf(" vote not granted for %d", args.CandidateId))
-		rf.mu.Unlock()
 		return
 	}
 
 	if rf.CurrentTerm < args.Term {
-		reply.VoteGranted = true
-		reply.Term = args.Term
-		rf.mu.Unlock()
-		rf.BecomeFollower(args.Term)
-		rf.VoteFor(args.CandidateId)
-		rf.Log(fmt.Sprintf(" vote granted for %d", args.CandidateId))
+		rf._becomeFollower(args.Term)
+		if rf._isPeerLogUptodate(args.LastLogIndex, args.LastLogTerm) {
+			reply.VoteGranted = true
+			reply.Term = args.Term
+			rf._voteFor(args.CandidateId)
+			rf.Log(fmt.Sprintf(" vote granted for %d", args.CandidateId))
+		} else {
+			reply.VoteGranted = false
+			reply.Term = args.Term
+			rf.Log(fmt.Sprintf(" vote not granted for %d, logs not up-to-date", args.CandidateId))
+		}
 		return
 	}
 
 	// rf.CurrentTerm == args.Term
 	reply.Term = rf.CurrentTerm
-	rf.mu.Unlock()
 
-	if rf.VotedFor == -1 {
-		rf.VoteFor(args.CandidateId)
+	if rf.VotedFor != -1 {
+		rf.Log(fmt.Sprintf(" vote not granted for %d, already voted on this term", args.CandidateId))
+		reply.VoteGranted = false
+		return
+	}
+
+	// rf.CurrentTerm == args.Term && rf.VotedFor == -1
+	if rf._isPeerLogUptodate(args.LastLogIndex, args.LastLogTerm) {
+		rf._voteFor(args.CandidateId)
 		rf.Log(fmt.Sprintf(" vote granted for %d", args.CandidateId))
 		reply.VoteGranted = true
 	} else {
-		rf.Log(fmt.Sprintf(" vote not granted for %d", args.CandidateId))
 		reply.VoteGranted = false
+		rf.Log(fmt.Sprintf(" vote not granted for %d; log not up-to-date", args.CandidateId))
+
 	}
 }
 
-func (rf *Raft) VoteFor(peer int) {
-	rf.mu.Lock()
+func (rf *Raft) _voteFor(peer int) {
 	rf.VotedFor = peer
-	rf.mu.Unlock()
+}
+
+func (rf *Raft) _isPeerLogUptodate(peerLastLogIndex, peerLastLogTerm int) bool {
+
+	if rf.Logs.Cursor < 0 {
+		// local log empty
+		return true
+	}
+	localLastLogIndex := rf.Logs.Cursor
+	localLastLogTerm := rf.Logs.Logs[localLastLogIndex].Term
+
+	if localLastLogTerm != peerLastLogTerm {
+		return localLastLogTerm < peerLastLogTerm
+	}
+
+	// localLastLogTerm == peerLastLogTerm
+	return localLastLogIndex <= peerLastLogIndex
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -272,7 +311,11 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
-	rf := &Raft{}
+	rf := &Raft{
+		Logs: Logs{
+			Cursor: -1,
+		},
+	}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
@@ -291,8 +334,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) RunVote() {
-	currentTerm := rf.TransitToCandidate()
-	voteTerm := currentTerm
+	rf.mu.Lock()
+
+	rf._transitToCandidate()
+	voteTerm := rf.CurrentTerm
+	lastLogIndex := rf.Logs.Cursor
+	lastLogTerm := -1
+	if lastLogIndex > 0 {
+		lastLogTerm = rf.Logs.Logs[lastLogIndex].Term
+	}
+	rf.mu.Unlock()
 	rf.Log("Running Vote")
 	var wg sync.WaitGroup
 	votes := 1
@@ -305,14 +356,16 @@ func (rf *Raft) RunVote() {
 		go func(i int) {
 			defer wg.Done()
 			arg := RequestVoteArgs{
-				Term:        voteTerm,
-				CandidateId: rf.me,
+				Term:         voteTerm,
+				CandidateId:  rf.me,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
 
-			rf.Log(fmt.Sprintf("term: %d ; contacting %d to request a vote", currentTerm, i))
+			rf.Log(fmt.Sprintf("term: %d ; contacting %d to request a vote", voteTerm, i))
 			rf.sendRequestVote(i, &arg, &reply)
-			rf.Log(fmt.Sprintf("term: %d ; done with %d", currentTerm, i))
+			rf.Log(fmt.Sprintf("term: %d ; done with %d", voteTerm, i))
 			replies <- reply
 		}(i)
 	}
@@ -324,24 +377,33 @@ func (rf *Raft) RunVote() {
 	for reply := range replies {
 		rf.mu.Lock()
 		status := rf.Status
-		rf.mu.Unlock()
+		currentTerm := rf.CurrentTerm
+		if currentTerm != voteTerm {
+			rf.Log("Current term is different from Vote term, break vote loop")
+			rf.mu.Unlock()
+			break
+		}
 		if status != STATUS_CANDIDATE {
 			rf.Log("election, status is no longer candidate, breaking loop")
+			rf.mu.Unlock()
 			break
 		}
 		if reply.VoteGranted {
 			votes++
 			if rf.IsQuorum(votes) {
 				rf.Log("reached quorum, promoting to leader")
-				rf.PromoteToLeader()
+				rf._promoteToLeader()
+				rf.mu.Unlock()
 				break
 			}
-		} else if reply.Term > currentTerm {
-			currentTerm = reply.Term
-			rf.BecomeFollower(currentTerm)
+		} else if reply.Term > voteTerm {
+			voteTerm = reply.Term
+			rf._becomeFollower(voteTerm)
+			rf.mu.Unlock()
 			rf.Log("descovering a new term during vote, canceling election")
 			break
 		}
+		rf.mu.Unlock()
 	}
 	rf.Log("vote done")
 	rf.Log(fmt.Sprintf("votes granted %d", votes))
@@ -364,10 +426,10 @@ func (rf *Raft) ShouldTriggerVote() bool {
 func (rf *Raft) HeartBeatsLoop() {
 	for {
 		rf.mu.Lock()
-		term := rf.CurrentTerm
-		status := rf.Status
+		currentTerm := rf.CurrentTerm
+		currentStatus := rf.Status
 		rf.mu.Unlock()
-		if status != STATUS_LEADER {
+		if currentStatus != STATUS_LEADER {
 			time.Sleep(10 * time.Millisecond)
 			continue
 		}
@@ -381,13 +443,15 @@ func (rf *Raft) HeartBeatsLoop() {
 			go func(server int) {
 				defer wg.Done()
 				arg := AppendEntryArgument{
-					Term:     term,
+					Term:     currentTerm,
 					LeaderId: rf.me,
 				}
 				reply := AppendEntryReply{}
 				rf.SendAppendEntry(server, &arg, &reply)
-				if reply.Term > term {
-					rf.BecomeFollower(reply.Term)
+				if reply.Term > currentTerm {
+					rf.mu.Lock()
+					rf._becomeFollower(reply.Term)
+					rf.mu.Unlock()
 				}
 			}(i)
 		}
@@ -407,9 +471,7 @@ type AppendEntryReply struct {
 	Success bool
 }
 
-func (rf *Raft) BecomeFollower(term int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) _becomeFollower(term int) {
 	if rf.Status != STATUS_FOLLOWER {
 		rf.Log("downgrading to follower")
 	}
@@ -424,9 +486,7 @@ func (rf *Raft) BecomeFollower(term int) {
 	rf.CurrentTerm = term
 }
 
-func (rf *Raft) PromoteToLeader() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) _promoteToLeader() {
 	if rf.Status == STATUS_FOLLOWER {
 		rf.Log("can't become a leader")
 		return
@@ -436,14 +496,10 @@ func (rf *Raft) PromoteToLeader() {
 	rf.VotedFor = -1
 }
 
-func (rf *Raft) TransitToCandidate() int {
-	rf.Log("becoming a candidate")
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+func (rf *Raft) _transitToCandidate() {
 	rf.Status = STATUS_CANDIDATE
 	rf.VotedFor = rf.me
 	rf.CurrentTerm++
-	return rf.CurrentTerm
 }
 
 func (rf *Raft) SendAppendEntry(server int, args *AppendEntryArgument, reply *AppendEntryReply) bool {
@@ -452,27 +508,25 @@ func (rf *Raft) SendAppendEntry(server int, args *AppendEntryArgument, reply *Ap
 }
 func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) {
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.Log(fmt.Sprintf("receiving AppendEntry %d", args.LeaderId))
 	rf.Log(fmt.Sprintf("current term %d, candidate term %d", rf.CurrentTerm, args.Term))
 
 	if rf.CurrentTerm > args.Term {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-		rf.mu.Unlock()
 	} else if rf.CurrentTerm <= args.Term {
 		// convert to  follower
 		reply.Success = true
 		reply.Term = rf.CurrentTerm
-		rf.mu.Unlock()
-		rf.BecomeFollower(args.Term)
-		rf.UpdateHeartBeatTimestamp()
+		rf._becomeFollower(args.Term)
+		rf._updateHeartBeatTimestamp()
 	}
+
 }
 
-func (rf *Raft) UpdateHeartBeatTimestamp() {
-	rf.mu.Lock()
+func (rf *Raft) _updateHeartBeatTimestamp() {
 	rf.LastHeartBeatTimestamp = time.Now().UnixMilli()
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) Log(message string) {
