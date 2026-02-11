@@ -172,6 +172,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		} else {
 			reply.VoteGranted = false
 			rf.Log(fmt.Sprintf(" vote not granted for %d, logs not up-to-date", args.CandidateId))
+			rf.Log(fmt.Sprintf("Candidate args %+v", args))
 		}
 		return
 	}
@@ -365,10 +366,7 @@ func (rf *Raft) RunVote() {
 	rf._transitToCandidate()
 	voteTerm := rf.CurrentTerm
 	lastLogIndex := rf.Logs.LastEntry
-	lastLogTerm := -1
-	if lastLogIndex > 0 {
-		lastLogTerm = rf.Logs.Logs[lastLogIndex].Term
-	}
+	lastLogTerm := rf.Logs._lastEntryTerm()
 	rf.mu.Unlock()
 	rf.Log("Running Vote")
 	var wg sync.WaitGroup
@@ -560,7 +558,7 @@ func (rf *Raft) UpdateCommitIndex() {
 			}
 		}
 	}
-	rf.Log(fmt.Sprintln("matched ", rf.MatchIndex))
+	rf.Log(fmt.Sprint("matched ", rf.MatchIndex))
 	if highestIndexWithQurum == rf.CommitIndex {
 		return
 	}
@@ -672,6 +670,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) 
 	newCommitIndex := min(args.LeaderCommit, rf.Logs.LastEntry)
 	//TODO avoid the function call if Coomit Index has not change
 	rf._sendCommandsFromLogs(rf.CommitIndex, newCommitIndex)
+	rf.Log(fmt.Sprint("commit index update from", rf.CommitIndex, " to ", newCommitIndex))
 	rf.CommitIndex = newCommitIndex
 }
 
