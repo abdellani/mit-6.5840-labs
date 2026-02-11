@@ -10,6 +10,7 @@ import (
 	//	"bytes"
 
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"sync"
@@ -43,9 +44,15 @@ type Raft struct {
 	LastHeartBeatTimestamp int64
 	CurrentTerm            int
 	VotedFor               int
-	NextIndex              []int
-	MatchIndex             []int
 	Logs                   Logs
+
+	CommitIndex int
+	LastApplied int
+
+	NextIndex  []int
+	MatchIndex []int
+
+	ApplyCh chan raftapi.ApplyMsg
 }
 
 type Log struct {
@@ -54,8 +61,8 @@ type Log struct {
 }
 
 type Logs struct {
-	Logs   []Log
-	Cursor int
+	Logs      []Log
+	LastEntry int
 }
 
 // return currentTerm and whether this server
@@ -157,14 +164,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.CurrentTerm < args.Term {
 		rf._becomeFollower(args.Term)
+		reply.Term = args.Term
 		if rf._isPeerLogUptodate(args.LastLogIndex, args.LastLogTerm) {
 			reply.VoteGranted = true
-			reply.Term = args.Term
 			rf._voteFor(args.CandidateId)
 			rf.Log(fmt.Sprintf(" vote granted for %d", args.CandidateId))
 		} else {
 			reply.VoteGranted = false
-			reply.Term = args.Term
 			rf.Log(fmt.Sprintf(" vote not granted for %d, logs not up-to-date", args.CandidateId))
 		}
 		return
@@ -174,6 +180,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.CurrentTerm
 
 	if rf.VotedFor != -1 {
+		//already voted
 		rf.Log(fmt.Sprintf(" vote not granted for %d, already voted on this term", args.CandidateId))
 		reply.VoteGranted = false
 		return
@@ -197,12 +204,12 @@ func (rf *Raft) _voteFor(peer int) {
 
 func (rf *Raft) _isPeerLogUptodate(peerLastLogIndex, peerLastLogTerm int) bool {
 
-	if rf.Logs.Cursor < 0 {
+	if rf.Logs.LastEntry < 0 {
 		// local log empty
 		return true
 	}
-	localLastLogIndex := rf.Logs.Cursor
-	localLastLogTerm := rf.Logs.Logs[localLastLogIndex].Term
+	localLastLogIndex := rf.Logs.LastEntry
+	localLastLogTerm := rf.Logs._lastEntryTerm()
 
 	if localLastLogTerm != peerLastLogTerm {
 		return localLastLogTerm < peerLastLogTerm
@@ -258,13 +265,21 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (3B).
-
-	return index, term, isLeader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	isLeader := rf.Status == STATUS_LEADER
+	term := rf.CurrentTerm
+	if !isLeader {
+		return -1, term, isLeader
+	}
+	rf.Logs.LastEntry++
+	index := rf.Logs.LastEntry
+	rf.Logs.Logs[index] = Log{
+		Term:    term,
+		Command: command,
+	}
+	return index + 1, term, isLeader
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -317,8 +332,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		NextIndex:  make([]int, len(peers)),
 		MatchIndex: make([]int, len(peers)),
 		Logs: Logs{
-			Cursor: -1,
+			LastEntry: -1,
+			Logs:      make([]Log, 1000), // TODO: allocate memory dynamically
 		},
+		ApplyCh:     applyCh,
+		CommitIndex: -1,
 	}
 	for i := range len(peers) {
 		rf.NextIndex[i] = -1
@@ -345,7 +363,7 @@ func (rf *Raft) RunVote() {
 
 	rf._transitToCandidate()
 	voteTerm := rf.CurrentTerm
-	lastLogIndex := rf.Logs.Cursor
+	lastLogIndex := rf.Logs.LastEntry
 	lastLogTerm := -1
 	if lastLogIndex > 0 {
 		lastLogTerm = rf.Logs.Logs[lastLogIndex].Term
@@ -433,7 +451,16 @@ func (rf *Raft) ShouldTriggerVote() bool {
 	return (rf.Status == STATUS_FOLLOWER || rf.Status == STATUS_CANDIDATE) && (now-rf.LastHeartBeatTimestamp) > 300
 }
 
+// add LastEntryIndex as parameter
 func (rf *Raft) HeartBeatsLoop(term int) {
+	rf.mu.Lock()
+	for i := range len(rf.peers) {
+		rf.NextIndex[i] = rf.Logs.LastEntry + 1
+		rf.MatchIndex[i] = -1
+	}
+
+	rf.mu.Unlock()
+
 	for {
 		rf.mu.Lock()
 		currentTerm := rf.CurrentTerm
@@ -454,32 +481,107 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 			wg.Add(1)
 			go func(server int) {
 				defer wg.Done()
+				rf.mu.Lock()
+				nextIndex := rf.NextIndex[server]
+				lastEntryIndex := rf.Logs.LastEntry
+				entries := rf.Logs._copyStartingFrom(nextIndex)
+				prevLogIndex := nextIndex - 1
+				prevLogTerm := -1
+				if prevLogIndex >= 0 {
+					prevLogTerm = rf.Logs.Logs[prevLogIndex].Term
+				}
+				commitIndex := rf.CommitIndex
+				rf.mu.Unlock()
 				arg := AppendEntryArgument{
-					Term:     currentTerm,
-					LeaderId: rf.me,
+					Term:         currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      entries,
+					LeaderCommit: commitIndex,
 				}
 				reply := AppendEntryReply{}
 				ok := rf.SendAppendEntry(server, &arg, &reply)
 				if !ok {
 					return
 				}
+				rf.mu.Lock()
 				if reply.Term > currentTerm {
-					rf.mu.Lock()
 					rf._becomeFollower(reply.Term)
-					rf.mu.Unlock()
+
+				} else if reply.Success == true {
+					rf.NextIndex[server] = lastEntryIndex + 1
+					rf.MatchIndex[server] = lastEntryIndex
+
+				} else if reply.Success == false {
+					rf.NextIndex[server]--
+					if rf.NextIndex[server] < 0 {
+						log.Panic("should not reach this value")
+					}
 				}
+				rf.mu.Unlock()
 			}(i)
 		}
 		//TODO what if some RPC calls take too much time? the heartbeat loop will become solwer.
 		wg.Wait()
+		rf.UpdateCommitIndex()
 		time.Sleep(100 * time.Millisecond)
-
 	}
 }
 
+func (rf *Raft) UpdateCommitIndex() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.Status != STATUS_LEADER {
+		return
+	}
+	highestIndexWithQurum := rf.CommitIndex
+	// TODO O(n**2) complexity, optimize this later
+	for i := 0; i < len(rf.MatchIndex); i++ {
+		indexI := rf.MatchIndex[i]
+		if indexI <= highestIndexWithQurum {
+			continue
+		}
+		count := 1 //count self, MatchIndex[me] == -1 always
+		for j := 0; j < len(rf.MatchIndex); j++ {
+			indexJ := rf.MatchIndex[i]
+			if indexJ < indexI {
+				continue
+			}
+			count++
+			if rf.IsQuorum(count) {
+				highestIndexWithQurum = indexI
+				break
+			}
+		}
+	}
+	if highestIndexWithQurum == rf.CommitIndex {
+		return
+	}
+
+	start := rf.CommitIndex
+	rf._sendCommandsFromLogs(start, highestIndexWithQurum)
+	rf.CommitIndex = highestIndexWithQurum
+}
+
+func (rf *Raft) _sendCommandsFromLogs(start, end int) {
+	for i := start + 1; i <= end; i++ {
+		rf.ApplyCh <- raftapi.ApplyMsg{
+			Command:      rf.Logs.Logs[i].Command,
+			CommandIndex: i + 1,
+			CommandValid: true,
+		}
+	}
+
+}
+
 type AppendEntryArgument struct {
-	Term     int
-	LeaderId int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []Log
+	LeaderCommit int
 }
 
 type AppendEntryReply struct {
@@ -528,18 +630,44 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) 
 	defer rf.mu.Unlock()
 	rf.Log(fmt.Sprintf("receiving AppendEntry %d", args.LeaderId))
 	rf.Log(fmt.Sprintf("current term %d, candidate term %d", rf.CurrentTerm, args.Term))
-
 	if rf.CurrentTerm > args.Term {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-	} else if rf.CurrentTerm <= args.Term {
+		return
+	}
+
+	if rf.CurrentTerm <= args.Term {
 		// convert to  follower
-		reply.Success = true
 		reply.Term = rf.CurrentTerm
 		rf._becomeFollower(args.Term)
 		rf._updateHeartBeatTimestamp()
 	}
+	localPrevLogIndex := rf.Logs.LastEntry
 
+	if localPrevLogIndex < args.PrevLogIndex {
+		// some entries are missing on the peer
+		reply.Success = false
+		return
+	}
+
+	// rf.Logs has an item on args.PrevLogIndex
+	if rf.Logs._termAt(args.PrevLogIndex) != args.PrevLogTerm {
+		// conflict between beteen node and leader
+		// erase entry that conflict and what comes after
+		rf.Logs._moveIndexTo(args.PrevLogIndex - 1)
+		reply.Success = false
+		return
+
+	}
+
+	// terms match on the two sides
+	reply.Success = true
+	// TODO Add entries
+	// TODO update commit index
+	rf.Logs._AppendEntries(args.PrevLogIndex, args.Entries)
+	newCommitIndex := min(args.LeaderCommit, rf.Logs.LastEntry)
+	rf._sendCommandsFromLogs(rf.CommitIndex, newCommitIndex)
+	rf.CommitIndex = newCommitIndex
 }
 
 func (rf *Raft) _updateHeartBeatTimestamp() {
@@ -548,4 +676,47 @@ func (rf *Raft) _updateHeartBeatTimestamp() {
 
 func (rf *Raft) Log(message string) {
 	// fmt.Println(rf.me, ":", message)
+}
+
+func (l *Logs) _moveIndexTo(index int) {
+	l.LastEntry = index
+}
+
+func (l *Logs) _lastEntryTerm() int {
+	lastEntryTerm := -1
+	if l.LastEntry != -1 {
+		lastEntryTerm = l.Logs[l.LastEntry].Term
+	}
+	return lastEntryTerm
+}
+
+func (l *Logs) _termAt(index int) int {
+	term := -1
+	if index >= 0 {
+		term = l.Logs[index].Term
+	}
+	return term
+}
+
+func (l *Logs) _copyStartingFrom(start int) []Log {
+	entries := &[]Log{}
+	for i := start; i <= l.LastEntry; i++ {
+		log := l.Logs[i]
+		logCopy := Log{
+			Term:    log.Term,
+			Command: log.Command,
+		}
+		*entries = append(*entries, logCopy)
+	}
+
+	return *entries
+}
+
+func (l *Logs) _AppendEntries(start int, entries []Log) {
+
+	for i := 1; i <= len(entries); i++ {
+		l.Logs[i+start].Command = entries[i-1].Command
+		l.Logs[i+start].Term = entries[i-1].Term
+	}
+	l.LastEntry = start + len(entries)
 }
