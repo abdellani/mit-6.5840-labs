@@ -279,6 +279,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Term:    term,
 		Command: command,
 	}
+	rf.Log("add command")
 	return index + 1, term, isLeader
 }
 
@@ -512,7 +513,7 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 				} else if reply.Success == true {
 					rf.NextIndex[server] = lastEntryIndex + 1
 					rf.MatchIndex[server] = lastEntryIndex
-
+					//TODO avoid updating Commit index, if the new index is already commited
 				} else if reply.Success == false {
 					rf.NextIndex[server]--
 					if rf.NextIndex[server] < 0 {
@@ -520,11 +521,15 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 					}
 				}
 				rf.mu.Unlock()
+				if reply.Success == true {
+					rf.UpdateCommitIndex()
+				}
 			}(i)
 		}
 		//TODO what if some RPC calls take too much time? the heartbeat loop will become solwer.
-		wg.Wait()
-		rf.UpdateCommitIndex()
+		go func() {
+			wg.Wait()
+		}()
 		time.Sleep(100 * time.Millisecond)
 	}
 }
@@ -555,6 +560,7 @@ func (rf *Raft) UpdateCommitIndex() {
 			}
 		}
 	}
+	rf.Log(fmt.Sprintln("matched ", rf.MatchIndex))
 	if highestIndexWithQurum == rf.CommitIndex {
 		return
 	}
@@ -564,8 +570,8 @@ func (rf *Raft) UpdateCommitIndex() {
 	rf.CommitIndex = highestIndexWithQurum
 }
 
-func (rf *Raft) _sendCommandsFromLogs(start, end int) {
-	for i := start + 1; i <= end; i++ {
+func (rf *Raft) _sendCommandsFromLogs(currentCommitIndex, nextCommitIndex int) {
+	for i := currentCommitIndex + 1; i <= nextCommitIndex; i++ {
 		rf.ApplyCh <- raftapi.ApplyMsg{
 			Command:      rf.Logs.Logs[i].Command,
 			CommandIndex: i + 1,
@@ -662,10 +668,9 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) 
 
 	// terms match on the two sides
 	reply.Success = true
-	// TODO Add entries
-	// TODO update commit index
 	rf.Logs._AppendEntries(args.PrevLogIndex, args.Entries)
 	newCommitIndex := min(args.LeaderCommit, rf.Logs.LastEntry)
+	//TODO avoid the function call if Coomit Index has not change
 	rf._sendCommandsFromLogs(rf.CommitIndex, newCommitIndex)
 	rf.CommitIndex = newCommitIndex
 }
