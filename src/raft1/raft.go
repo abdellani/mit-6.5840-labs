@@ -520,7 +520,7 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 				}
 				rf.mu.Unlock()
 				if reply.Success == true {
-					rf.UpdateCommitIndex()
+					rf.UpdateCommitIndexAfterAppendEntry()
 				}
 			}(i)
 		}
@@ -532,7 +532,7 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 	}
 }
 
-func (rf *Raft) UpdateCommitIndex() {
+func (rf *Raft) UpdateCommitIndexAfterAppendEntry() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if rf.Status != STATUS_LEADER {
@@ -547,7 +547,7 @@ func (rf *Raft) UpdateCommitIndex() {
 		}
 		count := 1 //count self, MatchIndex[me] == -1 always
 		for j := 0; j < len(rf.MatchIndex); j++ {
-			indexJ := rf.MatchIndex[i]
+			indexJ := rf.MatchIndex[j]
 			if indexJ < indexI {
 				continue
 			}
@@ -559,6 +559,8 @@ func (rf *Raft) UpdateCommitIndex() {
 		}
 	}
 	rf.Log(fmt.Sprint("matched ", rf.MatchIndex))
+	rf.Log(fmt.Sprintf("previous commit index %d ", rf.CommitIndex))
+	rf.Log(fmt.Sprintf("highest term term with majority found %d ", highestIndexWithQurum))
 	if highestIndexWithQurum == rf.CommitIndex {
 		return
 	}
@@ -670,7 +672,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) 
 	newCommitIndex := min(args.LeaderCommit, rf.Logs.LastEntry)
 	//TODO avoid the function call if Coomit Index has not change
 	rf._sendCommandsFromLogs(rf.CommitIndex, newCommitIndex)
-	rf.Log(fmt.Sprint("commit index update from", rf.CommitIndex, " to ", newCommitIndex))
+	rf.Log(fmt.Sprint("commit index update from ", rf.CommitIndex, " to ", newCommitIndex))
 	rf.CommitIndex = newCommitIndex
 }
 
