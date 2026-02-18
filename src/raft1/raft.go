@@ -474,23 +474,25 @@ func (rf *Raft) ShouldTriggerVote() bool {
 	now := time.Now().UnixMilli()
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	return (rf.Status == STATUS_FOLLOWER || rf.Status == STATUS_CANDIDATE) && (now-rf.ElectionsTimerStartReference) > 400
+	return (rf.Status == STATUS_FOLLOWER || rf.Status == STATUS_CANDIDATE) && (now-rf.ElectionsTimerStartReference) > 300
 }
 
 // add LastEntryIndex as parameter
 func (rf *Raft) HeartBeatsLoop(term int) {
 	rf.mu.Lock()
+	rounds := make([]int, len(rf.peers))
 	for i := range len(rf.peers) {
 		rf.NextIndex[i] = rf.Logs.LastEntryIndex + 1
 		rf.MatchIndex[i] = -1
+		rounds[i] = 0
 	}
-
 	rf.mu.Unlock()
-
+	counter := 0
 	for !rf.killed() {
 		rf.mu.Lock()
 		currentTerm := rf.CurrentTerm
 		currentStatus := rf.Status
+		counter++
 		rf.mu.Unlock()
 		if currentTerm != term {
 			return
@@ -517,6 +519,8 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 					prevLogTerm = rf.Logs.Logs[prevLogIndex].Term
 				}
 				commitIndex := rf.CommitIndex
+				round := counter
+				rounds[server] = counter
 				rf.mu.Unlock()
 				arg := AppendEntryArgument{
 					Term:         currentTerm,
@@ -535,21 +539,25 @@ func (rf *Raft) HeartBeatsLoop(term int) {
 					return
 				}
 				rf.mu.Lock()
-				if rf.CurrentTerm != currentTerm {
-					rf.mu.Unlock()
-					return
-				}
+
 				if reply.Term > rf.CurrentTerm {
 					rf._becomeFollower(reply.Term)
 					rf.persist()
-				} else if reply.Success == true {
+					rf.mu.Unlock()
+					return
+				} else if rf.CurrentTerm != currentTerm {
+					rf.mu.Unlock()
+					return
+				} else if round < rounds[server] {
+					rf.mu.Unlock()
+					return
+				}
+				if reply.Success == true {
 					rf.NextIndex[server] = lastEntryIndex + 1
 					rf.MatchIndex[server] = lastEntryIndex
 					//TODO avoid updating Commit index, if the new index is already commited
 				} else if reply.Success == false {
-					if nextIndex == rf.NextIndex[server] {
-						rf.NextIndex[server] = reply.HintIndex
-					}
+					rf.NextIndex[server] = reply.HintIndex
 					if rf.NextIndex[server] < 0 {
 						log.Panic("should not reach this value")
 					}
