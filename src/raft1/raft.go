@@ -54,7 +54,8 @@ type Raft struct {
 	NextIndex  []int
 	MatchIndex []int
 
-	ApplyCh chan raftapi.ApplyMsg
+	ApplyChBuffer chan raftapi.ApplyMsg
+	ApplyCh       chan raftapi.ApplyMsg
 }
 
 type Log struct {
@@ -356,8 +357,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			LastEntryIndex: -1,
 			Logs:           make([]Log, 10000), // TODO: allocate memory dynamically
 		},
-		ApplyCh:     applyCh,
-		CommitIndex: -1,
+		ApplyCh:       applyCh,
+		ApplyChBuffer: make(chan raftapi.ApplyMsg, 50),
+		CommitIndex:   -1,
 	}
 	rf.peers = peers
 	rf.persister = persister
@@ -365,6 +367,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.Status = STATUS_FOLLOWER
 	rf.VotedFor = -1
 	rf.ElectionsTimerStartReference = time.Now().UnixMilli()
+	go rf._commandsSendingLog()
 	// Your initialization code here (3A, 3B, 3C).
 
 	// initialize from state persisted before a crash
@@ -602,11 +605,19 @@ func (rf *Raft) UpdateCommitIndexAfterAppendEntry() {
 
 func (rf *Raft) _sendCommandsFromLogs(currentCommitIndex, nextCommitIndex int) {
 	for i := currentCommitIndex + 1; i <= nextCommitIndex; i++ {
-		rf.ApplyCh <- raftapi.ApplyMsg{
+		rf.ApplyChBuffer <- raftapi.ApplyMsg{
 			Command:      rf.Logs.Logs[i].Command,
 			CommandIndex: i + 1,
 			CommandValid: true,
 		}
+	}
+
+}
+
+func (rf *Raft) _commandsSendingLog() {
+	for !rf.killed() {
+		cmd := <-rf.ApplyChBuffer
+		rf.ApplyCh <- cmd
 	}
 
 }
