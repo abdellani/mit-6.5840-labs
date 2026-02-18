@@ -177,6 +177,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if rf._isPeerLogUptodate(args.LastLogIndex, args.LastLogTerm) {
 			reply.VoteGranted = true
 			rf._voteFor(args.CandidateId)
+			rf._resetElectionsTimeout()
 			rf.Log(fmt.Sprintf("voted for %d", args.CandidateId))
 		} else {
 			reply.VoteGranted = false
@@ -191,6 +192,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// if voted for the same candidate on same term (message dropped for example)
 	if rf.VotedFor == args.CandidateId {
 		reply.VoteGranted = true
+		rf._resetElectionsTimeout()
 		return
 	}
 
@@ -206,6 +208,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf._voteFor(args.CandidateId)
 		rf.Log(fmt.Sprintf("voted for %d", args.CandidateId))
 		reply.VoteGranted = true
+		rf._resetElectionsTimeout()
 		rf.persist()
 	} else {
 		reply.VoteGranted = false
