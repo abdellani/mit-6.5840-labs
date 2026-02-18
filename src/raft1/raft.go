@@ -574,7 +574,7 @@ func (rf *Raft) UpdateCommitIndexAfterAppendEntry() {
 	if rf.Status != STATUS_LEADER {
 		return
 	}
-	highestIndexWithQurum := rf.CommitIndex
+	highestIndexWithQurum := -1
 	// TODO O(n**2) complexity, optimize this later
 	for i := 0; i < len(rf.MatchIndex); i++ {
 		indexI := rf.MatchIndex[i]
@@ -595,12 +595,18 @@ func (rf *Raft) UpdateCommitIndexAfterAppendEntry() {
 		}
 	}
 	rf.Log(fmt.Sprint("matched ", rf.MatchIndex))
-	rf.Log(fmt.Sprintf("previous commit index %d ", rf.CommitIndex))
 	rf.Log(fmt.Sprintf("highest term term with majority found %d ", highestIndexWithQurum))
+	if highestIndexWithQurum < 0 {
+		return
+	}
+	termOfHIWQ := rf.Logs.Logs[highestIndexWithQurum].Term
+	if termOfHIWQ < rf.CurrentTerm {
+		return
+	}
 	if highestIndexWithQurum == rf.CommitIndex {
 		return
 	}
-
+	rf.Log(fmt.Sprintf("ci %d -> %d ", rf.CommitIndex, highestIndexWithQurum))
 	start := rf.CommitIndex
 	rf._sendCommandsFromLogs(start, highestIndexWithQurum)
 	rf.CommitIndex = highestIndexWithQurum
