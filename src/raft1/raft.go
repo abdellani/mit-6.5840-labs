@@ -722,7 +722,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgument, reply *AppendEntryReply) 
 		conflictingTerm := rf.Logs._termAt(args.PrevLogIndex)
 		rf.Logs._moveIndexTo(args.PrevLogIndex - 1)
 		reply.Success = false
-		reply.HintIndex = rf.Logs._firstOccuranceIndexOfTerm(conflictingTerm) + 1
+		reply.HintIndex = rf.Logs._firstOccuranceIndexOfTerm(conflictingTerm)
 		rf.persist()
 		return
 
@@ -802,13 +802,14 @@ func (rf *Raft) _logAndReleaseLock() {
 }
 
 func (l *Logs) _firstOccuranceIndexOfTerm(term int) int {
-	index := -1
-	for i := 0; i < l.LastEntryIndex; i++ {
+	//should return 0, if term nolonger exist
+	index := 0
+	for i := 0; i <= l.LastEntryIndex; i++ {
 		entry := l.Logs[i]
-		if entry.Term >= term {
+		if entry.Term == term {
+			index = i
 			break
 		}
-		index = i
 	}
 
 	return index
