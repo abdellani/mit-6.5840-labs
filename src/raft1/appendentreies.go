@@ -89,7 +89,7 @@ func (rf *Raft) broadcastHeartbeat() {
 	rf.mu.Unlock()
 
 	followerReplicator := func(peer int) {
-		rf.Log("hb => %d", peer)
+		// rf.Log("hb => %d", peer)
 		rf.mu.Lock()
 		if !rf._isLeader() {
 			rf.mu.Unlock()
@@ -110,7 +110,7 @@ func (rf *Raft) broadcastHeartbeat() {
 		reply := AppendEntryReply{}
 
 		ok := rf.sendAppendEntry(peer, &args, &reply)
-		rf.Log("hb => %d (ok? %v)", peer, ok)
+		// rf.Log("hb => %d (ok? %v)", peer, ok)
 
 		if rf.killed() {
 			return

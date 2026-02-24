@@ -25,10 +25,15 @@ func (rf *Raft) _becomeFollower(term int) {
 		rf.Log("downgrade to follower t= %d", rf.CurrentTerm)
 	}
 	rf.Status = STATUS_FOLLOWER
+	rf.persist()
 }
 
 func (rf *Raft) _resetVoteFlag() {
+	if rf.VotedFor == -1 {
+		return
+	}
 	rf.VotedFor = -1
+	rf.persist()
 	rf.Log("reset voteFor")
 }
 
@@ -40,6 +45,7 @@ func (rf *Raft) _voteFor(candidateId int) {
 		log.Panic("one vote per term!")
 	}
 	rf.VotedFor = candidateId
+	rf.persist()
 	rf.Log("v for %d (t=%d)", candidateId, rf.CurrentTerm)
 }
 
@@ -61,6 +67,7 @@ func (rf *Raft) _promoteToCandidate() {
 	rf.Status = STATUS_CANDIDATE
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
+	rf.persist()
 	rf.Log("promote to a candidate t=%d", rf.CurrentTerm)
 	rf._resetElectionsTimeout()
 }
@@ -126,10 +133,12 @@ func (rf *Raft) _appendEntry(entry Log) {
 		log.Panic("terms should only increase on the logs")
 	}
 	rf.Logs = append(rf.Logs, entry)
+	rf.persist()
 }
 
 func (rf *Raft) _truncateLogsFrom(index int) {
 	rf.Logs = rf.Logs[:index]
+	rf.persist()
 }
 func (rf *Raft) _logState() {
 	rf.Log("t=%d lei=%d let=%d ci=%d", rf.CurrentTerm, rf._lastEntryIndex(), rf._lastEntryTerm(), rf.CommitIndex)
