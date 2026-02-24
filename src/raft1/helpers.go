@@ -18,7 +18,7 @@ func (rf *Raft) _becomeFollower(term int) {
 		log.Panic("vote term can only increase")
 	}
 	if term > rf.CurrentTerm {
-		rf._resetVote()
+		rf._resetVoteFlag()
 	}
 	rf.CurrentTerm = term
 	if rf.Status != STATUS_FOLLOWER {
@@ -27,7 +27,7 @@ func (rf *Raft) _becomeFollower(term int) {
 	rf.Status = STATUS_FOLLOWER
 }
 
-func (rf *Raft) _resetVote() {
+func (rf *Raft) _resetVoteFlag() {
 	rf.VotedFor = -1
 	rf.Log("reset voteFor")
 }
@@ -69,8 +69,12 @@ func (rf *Raft) _promoteToLeader() {
 		log.Panic("cannot promote a follower to a leader")
 	}
 	rf.Status = STATUS_LEADER
+	lastIndex := rf._lastEntryIndex()
+	for i := 0; i < len(rf.peers); i++ {
+		rf.NextIndex[i] = lastIndex + 1
+		rf.MatchIndex[i] = -1
+	}
 	rf.Log("promoting to leader (t=%d)", rf.CurrentTerm)
-	go rf.HeartbeatLoop(rf.CurrentTerm)
 }
 
 func (rf *Raft) IsMajority(count int) bool {
@@ -78,7 +82,7 @@ func (rf *Raft) IsMajority(count int) bool {
 }
 
 func (rf *Raft) Log(format string, args ...any) {
-	if rf.Debug == false {
+	if Debug == false {
 		return
 	}
 	now := time.Now()
@@ -92,4 +96,47 @@ func FormatTime(t time.Time) string {
 
 func (rf *Raft) _isLeader() bool {
 	return rf.Status == STATUS_LEADER
+}
+
+func (rf *Raft) _lastEntryIndex() int {
+	return len(rf.Logs) - 1
+}
+func (rf *Raft) _lastEntryTerm() int {
+	if rf._lastEntryIndex() == -1 {
+		return -1
+	}
+	return rf.Logs[rf._lastEntryIndex()].Term
+}
+
+func (rf *Raft) _termAt(index int) int {
+	if index == -1 {
+		return -1
+	}
+	return rf.Logs[index].Term
+}
+
+func (rf *Raft) _appendEntries(entries []Log) {
+	for i := 0; i < len(entries); i++ {
+		rf._appendEntry(entries[i])
+	}
+}
+
+func (rf *Raft) _appendEntry(entry Log) {
+	if entry.Term < rf._lastEntryTerm() {
+		log.Panic("terms should only increase on the logs")
+	}
+	rf.Logs = append(rf.Logs, entry)
+}
+
+func (rf *Raft) _truncateLogsFrom(index int) {
+	rf.Logs = rf.Logs[:index]
+}
+func (rf *Raft) _logState() {
+	rf.Log("t=%d lei=%d let=%d ci=%d", rf.CurrentTerm, rf._lastEntryIndex(), rf._lastEntryTerm(), rf.CommitIndex)
+}
+
+func (rf *Raft) _entriesFrom(index int) []Log {
+	subarray := make([]Log, len(rf.Logs[index:]))
+	copy(subarray, rf.Logs[index:])
+	return subarray
 }

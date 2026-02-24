@@ -9,6 +9,7 @@ package raft
 import (
 	//	"bytes"
 
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,17 @@ type Raft struct {
 	CurrentTerm     int
 	ElectionTimeout time.Time
 	VotedFor        int
+	Logs            []Log
+	CommitIndex     int
+	NextIndex       []int
+	MatchIndex      []int
+	ApplyIndex      int
+	ApplyCh         chan raftapi.ApplyMsg
+}
+
+type Log struct {
+	Term    int
+	Command any
 }
 
 // return currentTerm and whether this server
@@ -120,12 +132,20 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term := rf.CurrentTerm
 	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (3B).
-
+	isLeader := rf._isLeader()
+	rf.Log("adding cmd %s", command)
+	if isLeader {
+		newEntry := Log{
+			Term:    term,
+			Command: command,
+		}
+		rf._appendEntry(newEntry)
+		index = rf._lastEntryIndex() + 1
+	}
 	return index, term, isLeader
 }
 
@@ -141,6 +161,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.Log("killed!")
 }
 
 func (rf *Raft) killed() bool {
@@ -149,15 +170,22 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+	ticker := time.NewTicker(time.Millisecond * 100)
+	defer func() { ticker.Stop() }()
 	for rf.killed() == false {
-		rf.RunElections()
-		// Your code here (3A)
-		// Check if a leader election should be started.
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		<-ticker.C
+		rf.mu.Lock()
+		if rf._isLeader() {
+			rf.mu.Unlock()
+			rf.broadcastHeartbeat()
+			continue
+		}
+		if rf._reachedTimeForElections() {
+			rf.mu.Unlock()
+			rf.RunElections()
+			continue
+		}
+		rf.mu.Unlock()
 	}
 }
 
@@ -177,16 +205,54 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	// Your initialization code here (3A, 3B, 3C).
-	rf.Debug = true
 	rf.CurrentTerm = 0
 	rf.VotedFor = -1
 	rf.Status = STATUS_FOLLOWER
 	rf._resetElectionsTimeout()
+	rf.CommitIndex = -1
+	rf.ApplyIndex = -1
+	rf.NextIndex = make([]int, len(peers))
+	rf.MatchIndex = make([]int, len(peers))
+	rf.ApplyCh = applyCh
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	rf.Log("start!")
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
+	go rf.applyLoop()
 	return rf
+}
+
+func (rf *Raft) applyLoop() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer func() { ticker.Stop() }()
+	for !rf.killed() {
+		<-ticker.C
+		rf.mu.Lock()
+		if rf.ApplyIndex == rf.CommitIndex {
+			rf.mu.Unlock()
+			continue
+		}
+		if rf.ApplyIndex > rf.CommitIndex {
+			log.Panic("applyIndex should never exceed CI")
+		}
+		var messages []raftapi.ApplyMsg
+		for rf.ApplyIndex < rf.CommitIndex {
+			rf.ApplyIndex++
+			entry := rf.Logs[rf.ApplyIndex]
+			cmdindex := rf.ApplyIndex + 1
+			messages = append(messages, raftapi.ApplyMsg{
+				Command:      entry.Command,
+				CommandIndex: cmdindex,
+				CommandValid: true,
+			})
+		}
+
+		rf.mu.Unlock()
+
+		for _, message := range messages {
+			rf.ApplyCh <- message
+		}
+
+	}
 }

@@ -8,8 +8,10 @@ import (
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
-	Term        int
-	CandidateId int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
@@ -23,31 +25,45 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
-	rf.Log("vr from %d(t=%d) ", args.CandidateId, args.Term)
+	rf.Log("vr from %d(t=%d, lli=%d llt=%d) ", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if rf.CurrentTerm > args.Term {
-		reply.VoteGranted = false
-		reply.Term = rf.CurrentTerm
-		return
+	defer rf._logState()
+	rf._logState()
+
+	if rf.CurrentTerm < args.Term {
+		rf._becomeFollower(args.Term)
 	}
-	if rf.CurrentTerm == args.Term {
-		if rf.VotedFor < 0 || rf.VotedFor == args.CandidateId {
-			rf._voteFor(args.CandidateId)
-			rf._resetElectionsTimeout()
-			reply.VoteGranted = true
-		} else {
-			reply.VoteGranted = false
-		}
-		reply.Term = rf.CurrentTerm
-		return
-	}
-	//rf.CurrentTerm < args.Term
-	rf._becomeFollower(args.Term)
-	rf._resetElectionsTimeout()
-	rf._voteFor(args.CandidateId)
-	reply.VoteGranted = true
+
 	reply.Term = rf.CurrentTerm
+	reply.VoteGranted = rf._canVoteFor(args)
+
+	if reply.VoteGranted {
+		rf.Log("vote for = %d", args.CandidateId)
+		rf._voteFor(args.CandidateId)
+		rf._resetElectionsTimeout()
+		return
+	}
+	rf.Log("vote rejected = %d", args.CandidateId)
+
+}
+
+func (rf *Raft) _canVoteFor(args *RequestVoteArgs) bool {
+	if rf.CurrentTerm > args.Term {
+		return false
+	}
+	return (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) && rf._isLogAsUpToDate(args.LastLogTerm, args.LastLogIndex)
+}
+
+func (rf *Raft) _isLogAsUpToDate(peerLastLogTerm, peerLastLogIndex int) bool {
+	localLastLogTerm := rf._lastEntryTerm()
+	localLastLogIndex := rf._lastEntryIndex()
+
+	if localLastLogTerm == peerLastLogTerm {
+		return localLastLogIndex <= peerLastLogIndex
+	}
+
+	return localLastLogTerm < peerLastLogTerm
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -91,7 +107,7 @@ func (rf *Raft) RunElections() {
 		return
 	}
 
-	if time.Now().Before(rf.ElectionTimeout) {
+	if !rf._reachedTimeForElections() {
 		rf.mu.Unlock()
 		return
 	}
@@ -100,8 +116,10 @@ func (rf *Raft) RunElections() {
 	term := rf.CurrentTerm
 	candidateId := rf.me
 	deadline := rf.ElectionTimeout
-
+	lastLogIndex := rf._lastEntryIndex()
+	lastLogTerm := rf._lastEntryTerm()
 	rf.mu.Unlock()
+
 	defer func(term int) { rf.Log(" done with election t = %d", term) }(term)
 
 	rf.Log("running vote")
@@ -111,8 +129,10 @@ func (rf *Raft) RunElections() {
 	repCh := make(chan RequestVoteReply, len(rf.peers)-1)
 
 	args := RequestVoteArgs{
-		Term:        term,
-		CandidateId: candidateId,
+		Term:         term,
+		CandidateId:  candidateId,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
 	}
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -124,6 +144,9 @@ func (rf *Raft) RunElections() {
 			rf.Log("RV call start -> %d t=%d", serverId, term)
 			ok := rf.sendRequestVote(serverId, &args, &reply)
 			rf.Log("RV call done -> %d (ok? %v)", serverId, ok)
+			if rf.killed() {
+				return
+			}
 			if ok {
 				repCh <- reply
 			}
