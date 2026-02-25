@@ -17,8 +17,9 @@ type AppendEntryArg struct {
 }
 
 type AppendEntryReply struct {
-	Term    int
-	Success bool
+	Term      int
+	Success   bool
+	HintIndex int
 }
 
 func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
@@ -43,6 +44,12 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
+		if rf._lastEntryIndex() < args.PrevLogIndex {
+			reply.HintIndex = rf._lastEntryIndex() + 1
+		} else {
+			conflictingTerm := rf._termAt(args.PrevLogIndex)
+			reply.HintIndex = rf._firstOccurence(conflictingTerm)
+		}
 		return
 	}
 
@@ -54,6 +61,16 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 	}
 }
 
+func (rf *Raft) _firstOccurence(term int) int {
+	index := -1
+	for i := 0; i <= rf._lastEntryIndex(); i++ {
+		if rf._termAt(i) >= term {
+			break
+		}
+		index = i
+	}
+	return index + 1
+}
 func (rf *Raft) _doesEntryExist(index, term int) bool {
 	if index > rf._lastEntryIndex() {
 		return false
@@ -137,7 +154,7 @@ func (rf *Raft) broadcastHeartbeat() {
 			rf.MatchIndex[peer] = prevLogIndex + len(entries)
 			rf.NextIndex[peer] = prevLogIndex + len(entries) + 1
 		} else {
-			rf.NextIndex[peer] = prevLogIndex
+			rf.NextIndex[peer] = reply.HintIndex
 		}
 
 		rf._checkCI()
@@ -181,7 +198,7 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntryArg, reply *AppendE
 	select {
 	case ok := <-done:
 		return ok
-	case <-time.After(120 * time.Millisecond):
+	case <-time.After(90 * time.Millisecond):
 		return false
 	}
 	// return rf.peers[server].Call("Raft.AppendEntry", args, reply)
