@@ -257,6 +257,9 @@ func (rf *Raft) applyLoop() {
 		rf.mu.Unlock()
 
 		for _, message := range messages {
+			if rf.killed() {
+				return
+			}
 			rf.ApplyCh <- message
 		}
 
