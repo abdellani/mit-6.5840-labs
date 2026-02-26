@@ -9,14 +9,13 @@ package raft
 import (
 	//	"bytes"
 
-	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	//	"6.5840/labgob"
-	"6.5840/labgob"
+
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -45,8 +44,14 @@ type Raft struct {
 	MatchIndex      []int
 	ApplyIndex      int
 	ApplyCh         chan raftapi.ApplyMsg
+	SnapshotData    Snapshot
 }
 
+type Snapshot struct {
+	LastIndex int
+	LastTerm  int
+	Data      []byte
+}
 type Log struct {
 	Term    int
 	Command any
@@ -65,64 +70,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Unlock()
 	rf.Log("is leader? %v, t=%d", isleader, term)
 	return term, isleader
-}
-
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
-	// Your code here (3C).
-	// Example:
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.CurrentTerm)
-	e.Encode(rf.VotedFor)
-	e.Encode(rf.Logs)
-	raftstate := w.Bytes()
-	rf.persister.Save(raftstate, nil)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (3C).
-	// Example:
-	r := bytes.NewBuffer(data)
-	d := labgob.NewDecoder(r)
-	var currentTerm int
-	var voteFor int
-	var logs []Log
-	if d.Decode(&currentTerm) != nil ||
-		d.Decode(&voteFor) != nil ||
-		d.Decode(&logs) != nil {
-		log.Panic("error while decoding")
-	} else {
-		rf.CurrentTerm = currentTerm
-		rf.VotedFor = voteFor
-		rf.Logs = logs
-	}
-}
-
-// how many bytes in Raft's persisted log?
-func (rf *Raft) PersistBytes() int {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	return rf.persister.RaftStateSize()
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (3D).
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -206,23 +153,33 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
-	rf := &Raft{}
+	rf := &Raft{
+		CurrentTerm: 0,
+		VotedFor:    -1,
+		Status:      STATUS_FOLLOWER,
+		CommitIndex: -1,
+		ApplyIndex:  -1,
+		ApplyCh:     applyCh,
+		NextIndex:   make([]int, len(peers)),
+		MatchIndex:  make([]int, len(peers)),
+		SnapshotData: Snapshot{
+			LastIndex: -1,
+			LastTerm:  -1,
+			Data:      nil,
+		},
+	}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
 	// Your initialization code here (3A, 3B, 3C).
-	rf.CurrentTerm = 0
-	rf.VotedFor = -1
-	rf.Status = STATUS_FOLLOWER
 	rf._resetElectionsTimeout()
-	rf.CommitIndex = -1
-	rf.ApplyIndex = -1
-	rf.NextIndex = make([]int, len(peers))
-	rf.MatchIndex = make([]int, len(peers))
-	rf.ApplyCh = applyCh
+
 	// initialize from state persisted before a crash
+	rf.Log("loading...")
 	rf.readPersist(persister.ReadRaftState())
-	rf.Log("start!")
+	rf.readSnapshot(persister.ReadSnapshot())
+	rf.Log("started!")
+
 	// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.applyLoop()
@@ -244,14 +201,24 @@ func (rf *Raft) applyLoop() {
 		}
 		var messages []raftapi.ApplyMsg
 		for rf.ApplyIndex < rf.CommitIndex {
-			rf.ApplyIndex++
-			entry := rf.Logs[rf.ApplyIndex]
-			cmdindex := rf.ApplyIndex + 1
-			messages = append(messages, raftapi.ApplyMsg{
-				Command:      entry.Command,
-				CommandIndex: cmdindex,
-				CommandValid: true,
-			})
+			if rf.ApplyIndex < rf.SnapshotData.LastIndex {
+				messages = append(messages, raftapi.ApplyMsg{
+					SnapshotIndex: rf.SnapshotData.LastIndex + 1,
+					SnapshotTerm:  rf.SnapshotData.LastTerm,
+					Snapshot:      rf.SnapshotData.Data,
+					SnapshotValid: true,
+				})
+				rf.ApplyIndex = rf.SnapshotData.LastIndex
+			} else {
+				rf.ApplyIndex++
+				entry := rf._getLogEntry(rf.ApplyIndex)
+				cmdindex := rf.ApplyIndex + 1
+				messages = append(messages, raftapi.ApplyMsg{
+					Command:      entry.Command,
+					CommandIndex: cmdindex,
+					CommandValid: true,
+				})
+			}
 		}
 
 		rf.mu.Unlock()

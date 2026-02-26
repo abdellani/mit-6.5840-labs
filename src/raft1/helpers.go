@@ -24,6 +24,9 @@ func (rf *Raft) _becomeFollower(term int) {
 	if rf.Status != STATUS_FOLLOWER {
 		rf.Log("downgrade to follower t= %d", rf.CurrentTerm)
 	}
+	if rf.Status == STATUS_FOLLOWER {
+		return
+	}
 	rf.Status = STATUS_FOLLOWER
 	rf.persist()
 }
@@ -106,20 +109,28 @@ func (rf *Raft) _isLeader() bool {
 }
 
 func (rf *Raft) _lastEntryIndex() int {
-	return len(rf.Logs) - 1
+	return len(rf.Logs) + rf.SnapshotData.LastIndex
 }
+
 func (rf *Raft) _lastEntryTerm() int {
-	if rf._lastEntryIndex() == -1 {
-		return -1
+	if len(rf.Logs) == 0 {
+		return rf.SnapshotData.LastTerm
 	}
-	return rf.Logs[rf._lastEntryIndex()].Term
+	return rf.Logs[len(rf.Logs)-1].Term
 }
 
 func (rf *Raft) _termAt(index int) int {
 	if index == -1 {
 		return -1
 	}
-	return rf.Logs[index].Term
+	if index < rf.SnapshotData.LastIndex {
+		return -1
+	}
+	if index == rf.SnapshotData.LastIndex {
+		return rf.SnapshotData.LastTerm
+	}
+	logsIndex := rf._logIndex(index)
+	return rf.Logs[logsIndex].Term
 }
 
 func (rf *Raft) _appendEntries(entries []Log) {
@@ -136,16 +147,49 @@ func (rf *Raft) _appendEntry(entry Log) {
 	rf.persist()
 }
 
-func (rf *Raft) _truncateLogsFrom(index int) {
-	rf.Logs = rf.Logs[:index]
+func (rf *Raft) _truncateLogsfromIndexAndAfter(index int) {
+	logIndex := rf._logIndex(index)
+	rf.Logs = rf.Logs[:logIndex]
 	rf.persist()
 }
 func (rf *Raft) _logState() {
-	rf.Log("t=%d lei=%d let=%d ci=%d", rf.CurrentTerm, rf._lastEntryIndex(), rf._lastEntryTerm(), rf.CommitIndex)
+	rf.Log("t=%d s=%d lei=%d(%d) let=%d ci=%d sli=%d slt=%d", rf.CurrentTerm,
+		rf.Status, rf._lastEntryIndex(), len(rf.Logs), rf._lastEntryTerm(),
+		rf.CommitIndex, rf.SnapshotData.LastIndex,
+		rf.SnapshotData.LastTerm)
 }
 
 func (rf *Raft) _entriesFrom(index int) []Log {
-	subarray := make([]Log, len(rf.Logs[index:]))
-	copy(subarray, rf.Logs[index:])
+	if index < rf.SnapshotData.LastIndex {
+		log.Panic("_entriesFrom: logIndex refers to an index that's stored on snapshot")
+	}
+	logIndex := rf._logIndex(index)
+	subarray := make([]Log, len(rf.Logs[logIndex:]))
+	copy(subarray, rf.Logs[logIndex:])
 	return subarray
+}
+
+// convert command index to index in logs
+func (rf *Raft) _logIndex(index int) int {
+
+	if rf.SnapshotData.LastIndex == -1 {
+		//no snapshotinstalled
+		return index
+	}
+
+	return index - rf.SnapshotData.LastIndex - 1
+}
+
+func (rf *Raft) _truncateLogsBefore(index int) {
+	logIndex := rf._logIndex(index)
+	if logIndex > len(rf.Logs)-1 {
+		return
+	}
+	rf.Logs = rf.Logs[logIndex+1:]
+}
+
+func (rf *Raft) _getLogEntry(index int) Log {
+	logIndex := rf._logIndex(index)
+
+	return rf.Logs[logIndex]
 }
