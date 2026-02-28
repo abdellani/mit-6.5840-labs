@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 )
 
@@ -92,7 +93,7 @@ func (rf *Raft) IsMajority(count int) bool {
 }
 
 func (rf *Raft) Log(format string, args ...any) {
-	if Debug == false {
+	if os.Getenv("DEBUG") != "true" {
 		return
 	}
 	now := time.Now()
@@ -153,9 +154,9 @@ func (rf *Raft) _truncateLogsfromIndexAndAfter(index int) {
 	rf.persist()
 }
 func (rf *Raft) _logState() {
-	rf.Log("t=%d s=%d lei=%d(%d) let=%d ci=%d sli=%d slt=%d", rf.CurrentTerm,
+	rf.Log("t=%d s=%d lei=%d(%d) let=%d ai=%d ci=%d sli=%d slt=%d", rf.CurrentTerm,
 		rf.Status, rf._lastEntryIndex(), len(rf.Logs), rf._lastEntryTerm(),
-		rf.CommitIndex, rf.SnapshotData.LastIndex,
+		rf.ApplyIndex, rf.CommitIndex, rf.SnapshotData.LastIndex,
 		rf.SnapshotData.LastTerm)
 }
 
@@ -192,4 +193,15 @@ func (rf *Raft) _getLogEntry(index int) Log {
 	logIndex := rf._logIndex(index)
 
 	return rf.Logs[logIndex]
+}
+
+func (rf *Raft) _updateCommitIndex(ci int) {
+	if ci < rf.CommitIndex {
+		log.Panicln("Should not decrease CI")
+	}
+	if ci == rf.CommitIndex {
+		return
+	}
+	rf.Log("ci %d -> %d", rf.CommitIndex, ci)
+	rf.CommitIndex = ci
 }

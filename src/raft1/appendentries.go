@@ -225,8 +225,7 @@ func (rf *Raft) _checkCommitIdex() {
 		// don't commit previous term
 		return
 	}
-	rf.Log("ci %d -> %d", rf.CommitIndex, hisim)
-	rf.CommitIndex = hisim
+	rf._updateCommitIndex(hisim)
 }
 
 func (rf *Raft) sendAppendEntryRPC(server int, args *AppendEntryArg, reply *AppendEntryReply) bool {
@@ -270,7 +269,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArg, reply *InstallSnapshot
 		rf._becomeFollower(args.Term)
 	}
 	rf.Logs = []Log{}
-	rf._installSnapShot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+	rf._applyInstalledSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
 	reply.Term = rf.CurrentTerm
 }
 

@@ -25,6 +25,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.SnapshotData.LastIndex)
 	e.Encode(rf.SnapshotData.LastTerm)
 	raftstate := w.Bytes()
+	rf.Log("persisting")
+	rf._logState()
 	if rf.SnapshotData.LastIndex == -1 {
 		rf.persister.Save(raftstate, nil)
 		return
@@ -62,6 +64,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.Logs = logs
 		rf.SnapshotData.LastIndex = lastIndex
 		rf.SnapshotData.LastTerm = lastTerm
+		rf._updateCommitIndex(lastIndex)
 	}
 }
 
@@ -95,10 +98,17 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	term := rf._termAt(index)
 	rf.Log("snapshot (li=%d lt=%d)", index, term)
 	rf._truncateLogsBefore(index)
-	rf._installSnapShot(index, term, snapshot)
+	rf._saveSnapshot(index, term, snapshot)
 }
 
-func (rf *Raft) _installSnapShot(lastIndex, lastTerm int, data []byte) {
+func (rf *Raft) _applyInstalledSnapshot(lastIndex, lastTerm int, data []byte) {
+	rf._saveSnapshot(lastIndex, lastTerm, data)
+	if rf.CommitIndex < lastIndex {
+		rf._updateCommitIndex(lastIndex)
+	}
+}
+
+func (rf *Raft) _saveSnapshot(lastIndex, lastTerm int, data []byte) {
 	rf.SnapshotData.LastIndex = lastIndex
 	rf.SnapshotData.LastTerm = lastTerm
 	rf.SnapshotData.Data = data
