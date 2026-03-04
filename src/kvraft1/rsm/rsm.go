@@ -1,9 +1,11 @@
 package rsm
 
 import (
-	"log"
+	"fmt"
 	"math/rand/v2"
+	"os"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -43,14 +45,7 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	pendingReqs []Req
-}
-
-type Req struct {
-	term  int
-	index int
-	id    int
-	resp  chan any
+	pendingReqs map[int]chan any
 }
 
 // servers[] contains the ports of the set of
@@ -74,7 +69,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		pendingReqs:  make([]Req, 0),
+		pendingReqs:  make(map[int]chan any),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -103,36 +98,49 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		Id:  reqId,
 		Req: req,
 	}
-	index, term, isLeader := rsm.rf.Start(op)
+	_, term, isLeader := rsm.rf.Start(op)
 	if !isLeader {
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
 	resp := make(chan any, 1)
 
 	rsm.mu.Lock()
-	rsm.pendingReqs = append(rsm.pendingReqs, Req{
-		id:    reqId,
-		term:  term,
-		index: index,
-		resp:  resp,
-	})
+	rsm.pendingReqs[reqId] = resp
 	rsm.mu.Unlock()
 	rsm.Log("submit cmd id:=%d", reqId)
-	result, ok := <-resp
+	ticker := time.NewTicker(1 * time.Second)
+	defer func() {
+		ticker.Stop()
+		rsm.mu.Lock()
+		delete(rsm.pendingReqs, reqId)
+		rsm.mu.Unlock()
+	}()
 
-	if !ok {
-		rsm.Log("cmd failed id=%d", reqId)
-		return rpc.ErrWrongLeader, nil
+	for {
+		select {
+		case result, ok := <-resp:
+			if !ok {
+				rsm.Log("cmd failed id=%d", reqId)
+				return rpc.ErrWrongLeader, nil
+			}
+			rsm.Log("received resp for cmd id:=%d", reqId)
+			return rpc.OK, result
+		case <-ticker.C:
+			cterm, isLeader := rsm.rf.GetState()
+			if isLeader && cterm == term {
+				continue
+			}
+			rsm.Log("ticker cmd id:=%d (isleader=%v, term=%v)", reqId, isLeader, cterm)
+			return rpc.ErrWrongLeader, nil
+		}
 	}
-	rsm.Log("received resp for cmd id:=%d", reqId)
-	return rpc.OK, result
 }
 
 func (rsm *RSM) Reader() {
 	for cmd := range rsm.applyCh {
 		op, ok := cmd.Command.(Op)
 		if !ok {
-			log.Panic("failed casting command")
+			continue
 		}
 		resp := rsm.sm.DoOp(op.Req)
 		rsm.Log("receive op: me=%d id=%d cmdIdx=%d", op.Me, op.Id, cmd.CommandIndex)
@@ -140,13 +148,10 @@ func (rsm *RSM) Reader() {
 		if op.Me == rsm.me {
 			rsm.SendResult(op.Id, resp)
 		}
-		term, _ := rsm.Raft().GetState()
-		rsm.RemovePendingReqsLessThenIndexOrTerm(cmd.CommandIndex, term)
-
 	}
 	rsm.mu.Lock()
-	for _, req := range rsm.pendingReqs {
-		close(req.resp)
+	for _, v := range rsm.pendingReqs {
+		close(v)
 	}
 	rsm.mu.Unlock()
 
@@ -155,37 +160,20 @@ func (rsm *RSM) Reader() {
 func (rsm *RSM) SendResult(reqId int, resp any) {
 	rsm.mu.Lock()
 	defer rsm.mu.Unlock()
-	for _, req := range rsm.pendingReqs {
-		if req.id != reqId {
-			continue
-		}
-		req.resp <- resp
-		// req will be removed on RemovePendingReqsLessThenIndexOrTerm
-	}
-}
+	req, ok := rsm.pendingReqs[reqId]
+	if !ok {
 
-func (rsm *RSM) RemovePendingReqsLessThenIndexOrTerm(index, term int) {
-	rsm.mu.Lock()
-	defer rsm.mu.Unlock()
-	updatedPendingReqsList := rsm.pendingReqs[:0]
-	for _, req := range rsm.pendingReqs {
-		if req.index <= index ||
-			req.term < term {
-			close(req.resp)
-			continue
-		}
-		updatedPendingReqsList = append(updatedPendingReqsList, req)
 	}
 
-	rsm.pendingReqs = updatedPendingReqsList
+	req <- resp
 }
 
 func (rsm *RSM) Log(format string, args ...any) {
-	// if os.Getenv("DEBUG") != "true" {
-	// 	return
-	// }
-	// now := time.Now()
-	// formatted := raft.FormatTime(now)
-	// message := fmt.Sprintf(format, args...)
-	// fmt.Println(formatted, " - ", rsm.me, " : ", message)
+	if os.Getenv("DEBUG") != "true" {
+		return
+	}
+	now := time.Now()
+	formatted := raft.FormatTime(now)
+	message := fmt.Sprintf(format, args...)
+	fmt.Println(formatted, " - ", rsm.me, " : ", message)
 }
