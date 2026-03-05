@@ -89,7 +89,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.mu.Unlock()
 	term := rf.CurrentTerm
 	index := -1
-	isLeader := rf._isLeader()
+	isLeader := !rf.killed() && rf._isLeader()
 	if isLeader {
 		rf.Log("adding cmd %s", command)
 		newEntry := Log{
