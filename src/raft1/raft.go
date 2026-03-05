@@ -189,9 +189,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) applyLoop() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer func() {
+		rf.Log("Closing Apply Loop")
 		close(rf.ApplyCh)
 		ticker.Stop()
 	}()
+	rf.Log("Starting Apply Loop")
 	for !rf.killed() {
 		<-ticker.C
 		rf.mu.Lock()

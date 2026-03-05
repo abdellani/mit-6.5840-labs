@@ -112,6 +112,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	defer func() {
 		ticker.Stop()
 		rsm.mu.Lock()
+		rsm.Log("deleting key %d", reqId)
 		delete(rsm.pendingReqs, reqId)
 		rsm.mu.Unlock()
 	}()
@@ -157,6 +158,7 @@ func (rsm *RSM) Reader() {
 	for _, v := range rsm.pendingReqs {
 		close(v)
 	}
+	rsm.Log("closing reader")
 	rsm.mu.Unlock()
 
 }
