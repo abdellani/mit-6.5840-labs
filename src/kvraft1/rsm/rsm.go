@@ -138,15 +138,19 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 func (rsm *RSM) Reader() {
 	for cmd := range rsm.applyCh {
+		if !cmd.CommandValid {
+			continue
+		}
 		op, ok := cmd.Command.(Op)
 		if !ok {
+			// no op
 			continue
 		}
 		resp := rsm.sm.DoOp(op.Req)
 		rsm.Log("receive op: me=%d id=%d cmdIdx=%d", op.Me, op.Id, cmd.CommandIndex)
 
 		if op.Me == rsm.me {
-			rsm.SendResult(op.Id, resp)
+			go rsm.SendResult(op.Id, resp)
 		}
 	}
 	rsm.mu.Lock()
@@ -159,12 +163,11 @@ func (rsm *RSM) Reader() {
 
 func (rsm *RSM) SendResult(reqId int, resp any) {
 	rsm.mu.Lock()
-	defer rsm.mu.Unlock()
 	req, ok := rsm.pendingReqs[reqId]
+	rsm.mu.Unlock()
 	if !ok {
-
+		return
 	}
-
 	req <- resp
 }
 
