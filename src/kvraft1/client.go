@@ -1,21 +1,35 @@
 package kvraft
 
 import (
-	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
-	"6.5840/tester1"
-)
+	"crypto/rand"
+	"encoding/binary"
+	"sync/atomic"
+	"time"
 
+	"6.5840/kvsrv1/rpc"
+	kvtest "6.5840/kvtest1"
+	tester "6.5840/tester1"
+)
 
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
 	// You will have to modify this struct.
+	clientId uint64
+	reqId    uint64
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 	ck := &Clerk{clnt: clnt, servers: servers}
 	// You'll have to add code here.
+	var b [8]byte
+	_, err := rand.Read(b[:])
+	if err != nil {
+		panic(err)
+	}
+
+	clientId := binary.LittleEndian.Uint64(b[:])
+	ck.clientId = clientId
 	return ck
 }
 
@@ -31,8 +45,27 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
-	// You will have to modify this function.
-	return "", 0, ""
+	args := rpc.GetArgs{
+		ClientId:  ck.clientId,
+		RequestId: ck.generateRequestId(),
+		Key:       key,
+	}
+	reply := rpc.GetReply{}
+	i := 0
+	for {
+		ok := ck.clnt.Call(ck.servers[i], "KVServer.Get", &args, &reply)
+		if !ok {
+			time.Sleep(100 * time.Millisecond)
+		}
+		switch reply.Err {
+		case rpc.ErrWrongLeader:
+			i = (i + 1) % len(ck.servers)
+		case rpc.OK:
+			return reply.Value, reply.Version, reply.Err
+		default:
+			panic("unexpected error")
+		}
+	}
 }
 
 // Put updates key with value only if the version in the
@@ -54,5 +87,40 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+
+	args := rpc.PutArgs{
+		ClientId:  ck.clientId,
+		RequestId: ck.generateRequestId(),
+		Key:       key,
+		Value:     value,
+		Version:   version,
+	}
+	reply := rpc.PutReply{}
+	retry := false
+	i := 0
+	for {
+		ok := ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
+		if !ok {
+			retry = true
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		switch reply.Err {
+		case rpc.ErrWrongLeader:
+			i = (i + 1) % len(ck.servers)
+		case rpc.ErrVersion:
+			if retry {
+				return rpc.ErrMaybe
+			} else {
+				return reply.Err
+			}
+		default:
+			return reply.Err
+		}
+	}
+
+}
+
+func (ck *Clerk) generateRequestId() uint64 {
+	return atomic.AddUint64(&ck.reqId, 1)
 }
