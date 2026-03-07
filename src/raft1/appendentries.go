@@ -168,7 +168,7 @@ func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, e
 	if reply.Success {
 		if prevLogIndex+len(entries) < rf.MatchIndex[peer] {
 			rf.Log("peer =%d, prevLogIndex+len(entries)=%d, rf.MatchIndex[peer]=%d", peer, prevLogIndex+len(entries), rf.MatchIndex[peer])
-			log.Panic("Match should never decreate !")
+			log.Panic("Match should never decrease!")
 		}
 		rf.MatchIndex[peer] = prevLogIndex + len(entries)
 		rf.NextIndex[peer] = prevLogIndex + len(entries) + 1
