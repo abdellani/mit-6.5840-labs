@@ -1,6 +1,8 @@
 package rsm
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -19,7 +21,7 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Id  int64
+	Id  uint64
 	Me  int
 	Req any
 }
@@ -44,7 +46,7 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	pendingReqs map[int64]chan any
+	pendingReqs map[uint64]chan any
 }
 
 // servers[] contains the ports of the set of
@@ -68,7 +70,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		pendingReqs:  make(map[int64]chan any),
+		pendingReqs:  make(map[uint64]chan any),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -91,7 +93,12 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	reqId := time.Now().UnixNano()
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+
+	reqId := binary.LittleEndian.Uint64(b[:])
 	op := Op{
 		Me:  rsm.me,
 		Id:  reqId,
@@ -165,7 +172,7 @@ func (rsm *RSM) Reader() {
 
 }
 
-func (rsm *RSM) SendResult(reqId int64, resp any) {
+func (rsm *RSM) SendResult(reqId uint64, resp any) {
 	rsm.mu.Lock()
 	req, ok := rsm.pendingReqs[reqId]
 	delete(rsm.pendingReqs, reqId)
