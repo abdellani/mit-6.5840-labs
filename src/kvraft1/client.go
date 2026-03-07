@@ -3,6 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ type Clerk struct {
 	// You will have to modify this struct.
 	clientId uint64
 	reqId    uint64
+	leader   int
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
@@ -50,20 +52,20 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		RequestId: ck.generateRequestId(),
 		Key:       key,
 	}
-	reply := rpc.GetReply{}
-	i := 0
 	for {
-		ok := ck.clnt.Call(ck.servers[i], "KVServer.Get", &args, &reply)
+		leader := ck.getLeaderId()
+		reply := rpc.GetReply{}
+		ok := ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
 		if !ok {
 			time.Sleep(100 * time.Millisecond)
 		}
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
-			i = (i + 1) % len(ck.servers)
-		case rpc.OK:
+			ck.setNextNodeAsLeader()
+		case rpc.OK, rpc.ErrNoKey:
 			return reply.Value, reply.Version, reply.Err
 		default:
-			panic("unexpected error")
+			panic(fmt.Sprintf("unexpected error %v", reply.Err))
 		}
 	}
 }
@@ -95,11 +97,12 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		Value:     value,
 		Version:   version,
 	}
-	reply := rpc.PutReply{}
 	retry := false
-	i := 0
+
 	for {
-		ok := ck.clnt.Call(ck.servers[i], "KVServer.Put", &args, &reply)
+		leaderId := ck.getLeaderId()
+		reply := rpc.PutReply{}
+		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.Put", &args, &reply)
 		if !ok {
 			retry = true
 			time.Sleep(100 * time.Millisecond)
@@ -107,7 +110,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		}
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
-			i = (i + 1) % len(ck.servers)
+			ck.setNextNodeAsLeader()
 		case rpc.ErrVersion:
 			if retry {
 				return rpc.ErrMaybe
@@ -123,4 +126,11 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 func (ck *Clerk) generateRequestId() uint64 {
 	return atomic.AddUint64(&ck.reqId, 1)
+}
+
+func (ck *Clerk) setNextNodeAsLeader() {
+	ck.leader = (ck.leader + 1) % len(ck.servers)
+}
+func (ck *Clerk) getLeaderId() int {
+	return ck.leader
 }
