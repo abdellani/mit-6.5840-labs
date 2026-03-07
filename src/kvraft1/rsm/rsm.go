@@ -2,7 +2,6 @@ package rsm
 
 import (
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"sync"
 	"time"
@@ -20,7 +19,7 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Id  int
+	Id  int64
 	Me  int
 	Req any
 }
@@ -45,7 +44,7 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	pendingReqs map[int]chan any
+	pendingReqs map[int64]chan any
 }
 
 // servers[] contains the ports of the set of
@@ -69,7 +68,7 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
-		pendingReqs:  make(map[int]chan any),
+		pendingReqs:  make(map[int64]chan any),
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
@@ -92,29 +91,32 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	reqId := int(rand.Float64() * 1000_000_000)
+	reqId := time.Now().UnixNano()
 	op := Op{
 		Me:  rsm.me,
 		Id:  reqId,
 		Req: req,
 	}
-	_, term, isLeader := rsm.rf.Start(op)
-	if !isLeader {
-		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
-	}
 	resp := make(chan any, 1)
-
 	rsm.mu.Lock()
 	rsm.pendingReqs[reqId] = resp
 	rsm.mu.Unlock()
-	rsm.Log("submit cmd id:=%d", reqId)
-	ticker := time.NewTicker(1 * time.Second)
 	defer func() {
-		ticker.Stop()
 		rsm.mu.Lock()
 		rsm.Log("deleting key %d", reqId)
 		delete(rsm.pendingReqs, reqId)
 		rsm.mu.Unlock()
+	}()
+
+	_, term, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	}
+
+	rsm.Log("submit cmd id:=%d", reqId)
+	ticker := time.NewTicker(1 * time.Second)
+	defer func() {
+		ticker.Stop()
 	}()
 
 	for {
@@ -163,14 +165,16 @@ func (rsm *RSM) Reader() {
 
 }
 
-func (rsm *RSM) SendResult(reqId int, resp any) {
+func (rsm *RSM) SendResult(reqId int64, resp any) {
 	rsm.mu.Lock()
 	req, ok := rsm.pendingReqs[reqId]
+	delete(rsm.pendingReqs, reqId)
 	rsm.mu.Unlock()
 	if !ok {
 		return
 	}
 	req <- resp
+	close(req)
 }
 
 func (rsm *RSM) Log(format string, args ...any) {

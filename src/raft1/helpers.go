@@ -104,7 +104,7 @@ func (rf *Raft) _promoteToLeader() {
 		if rf.CommitIndex == rf._lastEntryIndex() {
 			return
 		}
-		fmt.Println(rf.me, " adding nooop")
+		rf.Log("adding nooop")
 		rf._appendNoOpEntry()
 	}(rf.CurrentTerm)
 	rf.Log("promoting to leader (t=%d)", rf.CurrentTerm)
