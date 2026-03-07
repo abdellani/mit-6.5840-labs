@@ -42,6 +42,7 @@ type Raft struct {
 	CommitIndex     int
 	NextIndex       []int
 	MatchIndex      []int
+	LastAttempts    []int //last append entry attempts
 	ApplyIndex      int
 	ApplyCh         chan raftapi.ApplyMsg
 	SnapshotData    Snapshot
@@ -98,7 +99,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf._appendEntry(newEntry)
 		index = rf._lastEntryIndex() + 1
-		go rf.broadcastHeartbeat()
+		go rf.broadcastAppendEntry()
 	}
 	return index, term, isLeader
 }
@@ -131,7 +132,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		if rf._isLeader() {
 			rf.mu.Unlock()
-			rf.broadcastHeartbeat()
+			rf.broadcastAppendEntry()
 			continue
 		}
 		if rf._reachedTimeForElections() {
@@ -155,14 +156,15 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 	rf := &Raft{
-		CurrentTerm: 0,
-		VotedFor:    -1,
-		Status:      STATUS_FOLLOWER,
-		CommitIndex: -1,
-		ApplyIndex:  -1,
-		ApplyCh:     applyCh,
-		NextIndex:   make([]int, len(peers)),
-		MatchIndex:  make([]int, len(peers)),
+		CurrentTerm:  0,
+		VotedFor:     -1,
+		Status:       STATUS_FOLLOWER,
+		CommitIndex:  -1,
+		ApplyIndex:   -1,
+		ApplyCh:      applyCh,
+		NextIndex:    make([]int, len(peers)),
+		MatchIndex:   make([]int, len(peers)),
+		LastAttempts: make([]int, len(peers)),
 		SnapshotData: Snapshot{
 			LastIndex: -1,
 			LastTerm:  -1,

@@ -93,7 +93,7 @@ func (rf *Raft) _aeLogsMatching(args *AppendEntryArg) {
 		return
 	}
 }
-func (rf *Raft) broadcastHeartbeat() {
+func (rf *Raft) broadcastAppendEntry() {
 	//TODO: Protect against late responses. This is a rare case in my env.
 	rf.mu.Lock()
 	if !rf._isLeader() {
@@ -102,6 +102,10 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 	term := rf.CurrentTerm
 	leaderId := rf.me
+	attemptNumber := rf.LastAttempts[0] + 1
+	for i := 0; i < len(rf.peers); i++ {
+		rf.LastAttempts[i] = attemptNumber
+	}
 	rf.mu.Unlock()
 
 	followerReplicator := func(peer int) {
@@ -118,7 +122,7 @@ func (rf *Raft) broadcastHeartbeat() {
 			entries := rf._entriesFrom(prevLogIndex + 1)
 			commitIndex := rf.CommitIndex
 			rf.mu.Unlock()
-			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer)
+			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer, attemptNumber)
 			return
 		}
 		rf.mu.Unlock()
@@ -134,7 +138,7 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 }
 
-func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, entries []Log, commitIndex int, peer int) {
+func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, entries []Log, commitIndex, peer, attemtpNumber int) {
 	args := AppendEntryArg{
 		Term:         term,
 		LeaderId:     leaderId,
@@ -162,6 +166,11 @@ func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, e
 	if rf.CurrentTerm < reply.Term {
 		rf._becomeFollower(reply.Term)
 		rf._resetElectionsTimeout()
+		rf.mu.Unlock()
+		return
+	}
+
+	if attemtpNumber < rf.LastAttempts[rf.me] {
 		rf.mu.Unlock()
 		return
 	}
