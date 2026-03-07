@@ -98,6 +98,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf._appendEntry(newEntry)
 		index = rf._lastEntryIndex() + 1
+		go rf.broadcastHeartbeat()
 	}
 	return index, term, isLeader
 }
