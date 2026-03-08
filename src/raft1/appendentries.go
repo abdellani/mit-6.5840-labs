@@ -55,7 +55,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 
 	reply.Success = true
 	if args.LeaderCommit > rf.CommitIndex {
-		rf.CommitIndex = min(args.LeaderCommit, rf._lastEntryIndex())
+		rf._updateCommitIndex(min(args.LeaderCommit, rf._lastEntryIndex()))
 	}
 }
 
@@ -279,7 +279,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArg, reply *InstallSnapshot
 	if rf.CurrentTerm < args.Term {
 		rf._becomeFollower(args.Term)
 	}
-	rf.Logs = []Log{}
+
+	if args.LastIncludedIndex >= rf._lastEntryIndex() ||
+		rf._termAt(args.LastIncludedIndex) != args.LastIncludedTerm {
+		rf.Logs = []Log{}
+	} else {
+		// args.LastIncludedIndex < rf._lastEntryIndex()
+		rf._truncateLogsBefore(args.LastIncludedIndex)
+	}
 	rf._applyInstalledSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
 	reply.Term = rf.CurrentTerm
 }
