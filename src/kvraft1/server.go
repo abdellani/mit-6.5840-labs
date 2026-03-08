@@ -141,17 +141,19 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a GetReply: rep.(rpc.GetReply)
-
+	kv.mu.Lock()
 	if kv._isCommandRecentlyExecuted(args) {
 		cached, ok := kv._getCachedResponse(args).(rpc.GetReply)
 		if !ok {
 			panic("can't cast cache response to GetReply")
 		}
+		kv.mu.Unlock()
 		reply.Value = cached.Value
 		reply.Version = cached.Version
 		reply.Err = cached.Err
 		return
 	}
+	kv.mu.Unlock()
 
 	err, response := kv.rsm.Submit(*args)
 	kv.Log("srv: (client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
@@ -172,16 +174,17 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a PutReply: rep.(rpc.PutReply)
-
+	kv.mu.Lock()
 	if kv._isCommandRecentlyExecuted(args) {
 		cached, ok := kv._getCachedResponse(args).(rpc.PutReply)
 		if !ok {
 			panic("can't cast cache response to PutReply")
 		}
+		kv.mu.Unlock()
 		reply.Err = cached.Err
 		return
 	}
-
+	kv.mu.Unlock()
 	err, response := kv.rsm.Submit(*args)
 	kv.Log("(client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
 	switch err {

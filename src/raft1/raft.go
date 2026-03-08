@@ -42,7 +42,7 @@ type Raft struct {
 	CommitIndex             int
 	NextIndex               []int
 	MatchIndex              []int
-	LastAttempts            []int //last append entry attempts
+	LastAppendEntryAttempt  int //last append entry attempts
 	ApplyIndex              int
 	ApplyCh                 chan raftapi.ApplyMsg
 	ApplyLoopNotificationCh chan struct{}
@@ -168,7 +168,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		ApplyCh:                 applyCh,
 		NextIndex:               make([]int, len(peers)),
 		MatchIndex:              make([]int, len(peers)),
-		LastAttempts:            make([]int, len(peers)),
+		LastAppendEntryAttempt:  0,
 		ApplyLoopNotificationCh: make(chan struct{}),
 		SnapshotData: Snapshot{
 			LastIndex: -1,
@@ -195,7 +195,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 }
 
 func (rf *Raft) applyLoop() {
-	// use signals instead of a timer.
 	defer func() {
 		rf.Log("Closing Apply Loop")
 		close(rf.ApplyCh)
