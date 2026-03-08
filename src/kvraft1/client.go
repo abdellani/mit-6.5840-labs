@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
+	raft "6.5840/raft1"
 	tester "6.5840/tester1"
 )
 
@@ -48,24 +50,31 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 	args := rpc.GetArgs{
-		ClientId:  ck.clientId,
-		RequestId: ck.generateRequestId(),
-		Key:       key,
+		Args: rpc.Args{
+			ClientId:  ck.clientId,
+			RequestId: ck.generateRequestId(),
+		},
+		Key: key,
 	}
+	defer func(reqId int) { ck.Log("cid %d done with reqid %d \n", ck.clientId, reqId) }(int(args.RequestId))
 	for {
 		leader := ck.getLeaderId()
 		reply := rpc.GetReply{}
+		ck.Log(" sending  rid: %d\n -> op: get\n", ck.reqId)
 		ok := ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
 		if !ok {
+			ck.setNextNodeAsLeader()
 			time.Sleep(100 * time.Millisecond)
+			continue
 		}
+		ck.Log(" received rid: %d\n -> op: get,  response %v\n", ck.reqId, reply)
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			ck.setNextNodeAsLeader()
 		case rpc.OK, rpc.ErrNoKey:
 			return reply.Value, reply.Version, reply.Err
 		default:
-			panic(fmt.Sprintf("unexpected error %v", reply.Err))
+			panic(fmt.Sprintf("unexpected error '%v' (clId=%d, redId=%d)", reply.Err, args.ClientId, args.RequestId))
 		}
 	}
 }
@@ -91,23 +100,30 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
 
 	args := rpc.PutArgs{
-		ClientId:  ck.clientId,
-		RequestId: ck.generateRequestId(),
-		Key:       key,
-		Value:     value,
-		Version:   version,
+		Args: rpc.Args{
+			ClientId:  ck.clientId,
+			RequestId: ck.generateRequestId(),
+		},
+		Key:     key,
+		Value:   value,
+		Version: version,
 	}
 	retry := false
+	defer func(reqId int) { ck.Log("cid %d done with reqid %d \n", ck.clientId, reqId) }(int(args.RequestId))
 
 	for {
 		leaderId := ck.getLeaderId()
 		reply := rpc.PutReply{}
+		ck.Log("sending  rid: %d\n -> op: put", ck.reqId)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.Put", &args, &reply)
 		if !ok {
 			retry = true
+			ck.setNextNodeAsLeader()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		ck.Log("received rid: %d\n -> op: put,  response %v\n", ck.reqId, reply.Err)
+
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			ck.setNextNodeAsLeader()
@@ -117,8 +133,10 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			} else {
 				return reply.Err
 			}
+		case rpc.OK:
+			return rpc.OK
 		default:
-			return reply.Err
+			panic(fmt.Sprintf("unexpected error :'%v' ", reply.Err))
 		}
 	}
 
@@ -133,4 +151,14 @@ func (ck *Clerk) setNextNodeAsLeader() {
 }
 func (ck *Clerk) getLeaderId() int {
 	return ck.leader
+}
+
+func (ck *Clerk) Log(format string, args ...any) {
+	if os.Getenv("DEBUG") != "true" {
+		return
+	}
+	now := time.Now()
+	formatted := raft.FormatTime(now)
+	message := fmt.Sprintf(format, args...)
+	fmt.Println(formatted, " - ci :", ck.clientId, " : ", message)
 }

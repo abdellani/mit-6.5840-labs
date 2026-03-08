@@ -2,13 +2,16 @@ package kvraft
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
+	raft "6.5840/raft1"
 	tester "6.5840/tester1"
 )
 
@@ -18,8 +21,10 @@ type KVServer struct {
 	rsm  *rsm.RSM
 
 	// Your definitions here.
-	mu    sync.Mutex
-	store map[string]Data
+	mu              sync.Mutex
+	store           map[string]Data
+	lastClientsReqs map[uint64]uint64
+	lastClientsReps map[uint64]any
 }
 type Data struct {
 	Value   string
@@ -35,6 +40,14 @@ func (kv *KVServer) DoOp(req any) any {
 	// Your code here
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	op1 := req.(rpc.ArgsInterface)
+	if kv._isCommandRecentlyExecuted(op1) {
+		return kv._getCachedResponse(op1)
+	}
+	if kv._isCommandTooOld(op1) {
+		panic(fmt.Sprintf("Try to run a command that's too old (cid=%d , rid=%d)", op1.GetClientId(), op1.GetRequestId()))
+	}
+
 	switch op := req.(type) {
 	case rpc.GetArgs:
 		rs := rpc.GetReply{}
@@ -46,6 +59,7 @@ func (kv *KVServer) DoOp(req any) any {
 			rs.Version = rpc.Tversion(v.Version)
 			rs.Err = rpc.OK
 		}
+		kv._saveReqIdAndResponse(op, rs)
 		return rs
 
 	case rpc.PutArgs:
@@ -72,10 +86,46 @@ func (kv *KVServer) DoOp(req any) any {
 				rs.Err = rpc.OK
 			}
 		}
+		kv._saveReqIdAndResponse(op, rs)
 		return rs
+
 	default:
 		panic(fmt.Sprintf("unexpected Op %v", req))
 	}
+}
+
+func (kv *KVServer) _isCommandRecentlyExecuted(arg rpc.ArgsInterface) bool {
+	v, ok := kv.lastClientsReqs[arg.GetClientId()]
+	if !ok {
+		return false
+	}
+	return v == arg.GetRequestId()
+}
+func (kv *KVServer) _getCachedResponse(arg rpc.ArgsInterface) any {
+	v, ok := kv.lastClientsReps[arg.GetClientId()]
+	if !ok {
+		panic("tried to retrieve unaccessible key")
+	}
+	return v
+}
+
+func (kv *KVServer) _isCommandTooOld(arg rpc.ArgsInterface) bool {
+	v, ok := kv.lastClientsReqs[arg.GetClientId()]
+	if !ok {
+		return false
+	}
+	return arg.GetRequestId() < v
+}
+
+func (kv *KVServer) _saveReqIdAndResponse(args rpc.ArgsInterface, response any) {
+	kv._updateRecentReqId(args)
+	kv._updateResponse(args, response)
+}
+func (kv *KVServer) _updateRecentReqId(arg rpc.ArgsInterface) {
+	kv.lastClientsReqs[arg.GetClientId()] = arg.GetRequestId()
+}
+func (kv *KVServer) _updateResponse(args rpc.ArgsInterface, response any) {
+	kv.lastClientsReps[args.GetClientId()] = response
 }
 
 func (kv *KVServer) Snapshot() []byte {
@@ -91,7 +141,20 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a GetReply: rep.(rpc.GetReply)
+
+	if kv._isCommandRecentlyExecuted(args) {
+		cached, ok := kv._getCachedResponse(args).(rpc.GetReply)
+		if !ok {
+			panic("can't cast cache response to GetReply")
+		}
+		reply.Value = cached.Value
+		reply.Version = cached.Version
+		reply.Err = cached.Err
+		return
+	}
+
 	err, response := kv.rsm.Submit(*args)
+	kv.Log("srv: (client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result := response.(rpc.GetReply)
@@ -109,7 +172,18 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here. Use kv.rsm.Submit() to submit args
 	// You can use go's type casts to turn the any return value
 	// of Submit() into a PutReply: rep.(rpc.PutReply)
+
+	if kv._isCommandRecentlyExecuted(args) {
+		cached, ok := kv._getCachedResponse(args).(rpc.PutReply)
+		if !ok {
+			panic("can't cast cache response to PutReply")
+		}
+		reply.Err = cached.Err
+		return
+	}
+
 	err, response := kv.rsm.Submit(*args)
+	kv.Log("(client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result := response.(rpc.PutReply)
@@ -149,11 +223,23 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rpc.GetArgs{})
 
 	kv := &KVServer{
-		me:    me,
-		store: make(map[string]Data),
+		me:              me,
+		store:           make(map[string]Data),
+		lastClientsReqs: make(map[uint64]uint64),
+		lastClientsReps: make(map[uint64]any),
 	}
 
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 	// You may need initialization code here.
 	return []tester.IService{kv, kv.rsm.Raft()}
+}
+
+func (kv *KVServer) Log(format string, args ...any) {
+	if os.Getenv("DEBUG") != "true" {
+		return
+	}
+	now := time.Now()
+	formatted := raft.FormatTime(now)
+	message := fmt.Sprintf(format, args...)
+	fmt.Println(formatted, " - srv: ", kv.me, " : ", message)
 }
