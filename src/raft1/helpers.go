@@ -233,4 +233,15 @@ func (rf *Raft) _updateCommitIndex(ci int) {
 	}
 	rf.Log("ci %d -> %d", rf.CommitIndex, ci)
 	rf.CommitIndex = ci
+	rf._sendSignalToApplyLoop()
+}
+
+func (rf *Raft) _sendSignalToApplyLoop() {
+	if rf.killed() {
+		return
+	}
+	select {
+	case rf.ApplyLoopNotificationCh <- struct{}{}:
+	default:
+	}
 }

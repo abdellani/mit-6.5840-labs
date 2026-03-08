@@ -17,8 +17,25 @@ const (
 )
 
 type Tversion uint64
+type Args struct {
+	ClientId  uint64
+	RequestId uint64
+}
 
+func (r Args) GetClientId() uint64 {
+	return r.ClientId
+}
+
+func (r Args) GetRequestId() uint64 {
+	return r.RequestId
+}
+
+type ArgsInterface interface {
+	GetClientId() uint64
+	GetRequestId() uint64
+}
 type PutArgs struct {
+	Args
 	Key     string
 	Value   string
 	Version Tversion
@@ -29,6 +46,7 @@ type PutReply struct {
 }
 
 type GetArgs struct {
+	Args
 	Key string
 }
 
@@ -37,4 +55,3 @@ type GetReply struct {
 	Version Tversion
 	Err     Err
 }
-

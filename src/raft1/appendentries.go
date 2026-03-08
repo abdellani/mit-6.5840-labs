@@ -55,7 +55,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 
 	reply.Success = true
 	if args.LeaderCommit > rf.CommitIndex {
-		rf.CommitIndex = min(args.LeaderCommit, rf._lastEntryIndex())
+		rf._updateCommitIndex(min(args.LeaderCommit, rf._lastEntryIndex()))
 	}
 }
 
@@ -93,8 +93,7 @@ func (rf *Raft) _aeLogsMatching(args *AppendEntryArg) {
 		return
 	}
 }
-func (rf *Raft) broadcastHeartbeat() {
-	//TODO: Protect against late responses. This is a rare case in my env.
+func (rf *Raft) broadcastAppendEntry() {
 	rf.mu.Lock()
 	if !rf._isLeader() {
 		rf.mu.Unlock()
@@ -102,6 +101,8 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 	term := rf.CurrentTerm
 	leaderId := rf.me
+	rf.LastAppendEntryAttempt++
+	attemptNumber := rf.LastAppendEntryAttempt
 	rf.mu.Unlock()
 
 	followerReplicator := func(peer int) {
@@ -118,7 +119,7 @@ func (rf *Raft) broadcastHeartbeat() {
 			entries := rf._entriesFrom(prevLogIndex + 1)
 			commitIndex := rf.CommitIndex
 			rf.mu.Unlock()
-			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer)
+			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer, attemptNumber)
 			return
 		}
 		rf.mu.Unlock()
@@ -134,7 +135,7 @@ func (rf *Raft) broadcastHeartbeat() {
 	}
 }
 
-func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, entries []Log, commitIndex int, peer int) {
+func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, entries []Log, commitIndex, peer, attemptNumber int) {
 	args := AppendEntryArg{
 		Term:         term,
 		LeaderId:     leaderId,
@@ -162,6 +163,11 @@ func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, e
 	if rf.CurrentTerm < reply.Term {
 		rf._becomeFollower(reply.Term)
 		rf._resetElectionsTimeout()
+		rf.mu.Unlock()
+		return
+	}
+
+	if attemptNumber < rf.LastAppendEntryAttempt {
 		rf.mu.Unlock()
 		return
 	}
@@ -270,7 +276,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArg, reply *InstallSnapshot
 	if rf.CurrentTerm < args.Term {
 		rf._becomeFollower(args.Term)
 	}
-	rf.Logs = []Log{}
+
+	if args.LastIncludedIndex >= rf._lastEntryIndex() ||
+		rf._termAt(args.LastIncludedIndex) != args.LastIncludedTerm {
+		rf.Logs = []Log{}
+	} else {
+		// args.LastIncludedIndex < rf._lastEntryIndex()
+		rf._truncateLogsBefore(args.LastIncludedIndex)
+	}
 	rf._applyInstalledSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
 	reply.Term = rf.CurrentTerm
 }
