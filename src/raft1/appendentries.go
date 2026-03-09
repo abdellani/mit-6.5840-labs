@@ -124,7 +124,7 @@ func (rf *Raft) broadcastAppendEntry() {
 		}
 		rf.mu.Unlock()
 
-		rf.sendInstallSnapshot(term, leaderId, rf.SnapshotData, peer)
+		rf.sendInstallSnapshot(term, leaderId, rf.SnapshotData, peer, attemptNumber)
 	}
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -186,7 +186,7 @@ func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, e
 	rf.mu.Unlock()
 }
 
-func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer int) {
+func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer, attemptNumber int) {
 	args := InstallSnapshotArg{
 		Term:              term,
 		LeaderId:          leaderId,
@@ -206,6 +206,11 @@ func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer 
 	rf.mu.Lock()
 	if rf.CurrentTerm < reply.Term {
 		rf._becomeFollower(reply.Term)
+		rf.mu.Unlock()
+		return
+	}
+
+	if attemptNumber < rf.LastAppendEntryAttempt {
 		rf.mu.Unlock()
 		return
 	}
