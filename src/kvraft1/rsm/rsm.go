@@ -17,6 +17,10 @@ import (
 
 var useRaftStateMachine bool // to plug in another raft besided raft1
 
+// goldenRatio64 is the 64-bit fractional part of the golden ratio (phi),
+// used as a multiplier for mixing hash bits when combining two 64-bit IDs.
+const goldenRatio64 uint64 = 0x9e3779b97f4a7c15
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
@@ -92,13 +96,26 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// for example: op := Op{Me: rsm.me, Id: id, Req: req}, where req
 	// is the argument to Submit and id is a unique id for the op.
 
-	// your code here
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
+	// For requests that carry a ClientId and RequestId (i.e. those that
+	// embed rpc.Args), derive a stable Op.Id from those fields.  This
+	// ensures that retries of the same logical client request reuse the
+	// same Id so that, even if both the original submission and a retry
+	// end up committing, the state machine's existing deduplication logic
+	// (keyed on ClientId+RequestId) prevents double execution.
+	//
+	// For all other requests a random Id is used (the previous behaviour).
+	var reqId uint64
+	if args, ok := req.(rpc.ArgsInterface); ok {
+		// Combine the two 64-bit fields with multiplication by the
+		// 64-bit golden-ratio constant for good bit mixing.
+		reqId = args.GetClientId()*goldenRatio64 ^ args.GetRequestId()
+	} else {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			panic(err)
+		}
+		reqId = binary.LittleEndian.Uint64(b[:])
 	}
-
-	reqId := binary.LittleEndian.Uint64(b[:])
 	op := Op{
 		Me:  rsm.me,
 		Id:  reqId,
