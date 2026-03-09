@@ -122,8 +122,10 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	rsm.Log("submit cmd id:=%d", reqId)
 	ticker := time.NewTicker(1 * time.Second)
+	timer := time.NewTimer(5 * time.Second)
 	defer func() {
 		ticker.Stop()
+		timer.Stop()
 	}()
 
 	for {
@@ -141,6 +143,9 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 				continue
 			}
 			rsm.Log("ticker cmd id:=%d (isleader=%v, term=%v)", reqId, isLeader, cterm)
+			return rpc.ErrWrongLeader, nil
+		case <-timer.C:
+			rsm.Log("time out cmd id:=%d =%v)")
 			return rpc.ErrWrongLeader, nil
 		}
 	}
