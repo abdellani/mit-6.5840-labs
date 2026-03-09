@@ -23,9 +23,9 @@ type AppendEntryReply struct {
 }
 
 func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
+	rf.mu.Lock()
 	rf.Log("hb <= %d (t=%d pri=%d prt=%d le=%d lci=%d)", args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.LeaderCommit)
 	rf._logState()
-	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf._logState()
 
@@ -128,9 +128,15 @@ func (rf *Raft) broadcastAppendEntry() {
 			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer, attemptNumber)
 			return
 		}
+		snapshot := Snapshot{
+			LastIndex: rf.SnapshotData.LastIndex,
+			LastTerm:  rf.SnapshotData.LastTerm,
+			Data:      make([]byte, len(rf.SnapshotData.Data)),
+		}
+		copy(snapshot.Data, rf.SnapshotData.Data)
 		rf.mu.Unlock()
 
-		rf.sendInstallSnapshot(term, leaderId, rf.SnapshotData, peer, attemptNumber)
+		rf.sendInstallSnapshot(term, leaderId, snapshot, peer, attemptNumber)
 	}
 
 	for i := 0; i < len(rf.peers); i++ {
