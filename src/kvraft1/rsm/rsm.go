@@ -145,7 +145,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			rsm.Log("ticker cmd id:=%d (isleader=%v, term=%v)", reqId, isLeader, cterm)
 			return rpc.ErrWrongLeader, nil
 		case <-timer.C:
-			rsm.Log("time out cmd id:=%d =%v)")
+			rsm.Log("time out cmd=%d", reqId)
 			return rpc.ErrWrongLeader, nil
 		}
 	}
@@ -154,7 +154,7 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 func (rsm *RSM) Reader() {
 	for cmd := range rsm.applyCh {
 		if cmd.SnapshotValid {
-			rsm.Log("snapshot lsi %d", cmd.CommandIndex)
+			rsm.Log("snapshot lsi %d", cmd.SnapshotIndex)
 			rsm.sm.Restore(cmd.Snapshot)
 			continue
 		}

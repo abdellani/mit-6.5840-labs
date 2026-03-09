@@ -135,12 +135,10 @@ func (kv *KVServer) Snapshot() []byte {
 	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(kv.store)
-	e.Encode(kv.lastClientsReqs)
-	err := e.Encode(kv.lastClientsReps)
-	if err != nil {
-		fmt.Printf("%v", kv.lastClientsReps)
-		panic("failed to encode lastClientsReps")
+	if e.Encode(kv.store) != nil ||
+		e.Encode(kv.lastClientsReqs) != nil ||
+		e.Encode(kv.lastClientsReps) != nil {
+		panic("failed to encode kv state")
 	}
 	return w.Bytes()
 }
