@@ -39,8 +39,9 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 	rf._resetElectionsTimeout()
 
 	if rf.SnapshotData.LastIndex > args.PrevLogIndex {
+		reply.Term = rf.CurrentTerm
 		reply.Success = false
-		reply.HintIndex = rf.SnapshotData.LastIndex
+		reply.HintIndex = rf.SnapshotData.LastIndex + 1
 		return
 	}
 
@@ -294,6 +295,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArg, reply *InstallSnapshot
 		rf._becomeFollower(args.Term)
 	}
 	if args.LastIncludedIndex < rf.SnapshotData.LastIndex {
+		reply.Term = rf.CurrentTerm
 		return
 	}
 
