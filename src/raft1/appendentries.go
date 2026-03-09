@@ -23,9 +23,9 @@ type AppendEntryReply struct {
 }
 
 func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
+	rf.mu.Lock()
 	rf.Log("hb <= %d (t=%d pri=%d prt=%d le=%d lci=%d)", args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries), args.LeaderCommit)
 	rf._logState()
-	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf._logState()
 
@@ -37,6 +37,13 @@ func (rf *Raft) AppendEntry(args *AppendEntryArg, reply *AppendEntryReply) {
 
 	rf._becomeFollower(args.Term)
 	rf._resetElectionsTimeout()
+
+	if rf.SnapshotData.LastIndex > args.PrevLogIndex {
+		reply.Term = rf.CurrentTerm
+		reply.Success = false
+		reply.HintIndex = rf.SnapshotData.LastIndex + 1
+		return
+	}
 
 	if !rf._doesEntryExist(args.PrevLogIndex, args.PrevLogTerm) {
 
@@ -122,9 +129,15 @@ func (rf *Raft) broadcastAppendEntry() {
 			rf.sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm, entries, commitIndex, peer, attemptNumber)
 			return
 		}
+		snapshot := Snapshot{
+			LastIndex: rf.SnapshotData.LastIndex,
+			LastTerm:  rf.SnapshotData.LastTerm,
+			Data:      make([]byte, len(rf.SnapshotData.Data)),
+		}
+		copy(snapshot.Data, rf.SnapshotData.Data)
 		rf.mu.Unlock()
 
-		rf.sendInstallSnapshot(term, leaderId, rf.SnapshotData, peer)
+		rf.sendInstallSnapshot(term, leaderId, snapshot, peer, attemptNumber)
 	}
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -186,7 +199,7 @@ func (rf *Raft) sendAppendEntry(term, leaderId, prevLogIndex, prevLogTerm int, e
 	rf.mu.Unlock()
 }
 
-func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer int) {
+func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer, attemptNumber int) {
 	args := InstallSnapshotArg{
 		Term:              term,
 		LeaderId:          leaderId,
@@ -206,6 +219,12 @@ func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer 
 	rf.mu.Lock()
 	if rf.CurrentTerm < reply.Term {
 		rf._becomeFollower(reply.Term)
+		rf._resetElectionsTimeout()
+		rf.mu.Unlock()
+		return
+	}
+
+	if attemptNumber < rf.LastAppendEntryAttempt {
 		rf.mu.Unlock()
 		return
 	}
@@ -275,6 +294,10 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArg, reply *InstallSnapshot
 	}
 	if rf.CurrentTerm < args.Term {
 		rf._becomeFollower(args.Term)
+	}
+	if args.LastIncludedIndex < rf.SnapshotData.LastIndex {
+		reply.Term = rf.CurrentTerm
+		return
 	}
 
 	if args.LastIncludedIndex >= rf._lastEntryIndex() ||

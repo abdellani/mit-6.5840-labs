@@ -122,8 +122,10 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 	rsm.Log("submit cmd id:=%d", reqId)
 	ticker := time.NewTicker(1 * time.Second)
+	timer := time.NewTimer(5 * time.Second)
 	defer func() {
 		ticker.Stop()
+		timer.Stop()
 	}()
 
 	for {
@@ -142,12 +144,20 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			}
 			rsm.Log("ticker cmd id:=%d (isleader=%v, term=%v)", reqId, isLeader, cterm)
 			return rpc.ErrWrongLeader, nil
+		case <-timer.C:
+			rsm.Log("time out cmd=%d", reqId)
+			return rpc.ErrWrongLeader, nil
 		}
 	}
 }
 
 func (rsm *RSM) Reader() {
 	for cmd := range rsm.applyCh {
+		if cmd.SnapshotValid {
+			rsm.Log("snapshot lsi %d", cmd.SnapshotIndex)
+			rsm.sm.Restore(cmd.Snapshot)
+			continue
+		}
 		if !cmd.CommandValid {
 			continue
 		}
@@ -157,6 +167,11 @@ func (rsm *RSM) Reader() {
 			continue
 		}
 		resp := rsm.sm.DoOp(op.Req)
+		if rsm.maxraftstate > 0 {
+			if (float32(rsm.rf.PersistBytes()) / float32(rsm.maxraftstate)) > 0.8 {
+				rsm.rf.Snapshot(cmd.CommandIndex, rsm.sm.Snapshot())
+			}
+		}
 		rsm.Log("receive op: me=%d id=%d cmdIdx=%d", op.Me, op.Id, cmd.CommandIndex)
 
 		if op.Me == rsm.me {
@@ -164,10 +179,10 @@ func (rsm *RSM) Reader() {
 		}
 	}
 	rsm.mu.Lock()
+	rsm.Log("closing reader")
 	for _, v := range rsm.pendingReqs {
 		close(v)
 	}
-	rsm.Log("closing reader")
 	rsm.mu.Unlock()
 
 }
@@ -191,5 +206,5 @@ func (rsm *RSM) Log(format string, args ...any) {
 	now := time.Now()
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)
-	fmt.Println(formatted, " - ", rsm.me, " : ", message)
+	fmt.Println(formatted, " - rsm ", rsm.me, " : ", message)
 }

@@ -56,18 +56,18 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 		},
 		Key: key,
 	}
-	defer func(reqId int) { ck.Log("cid %d done with reqid %d \n", ck.clientId, reqId) }(int(args.RequestId))
+	defer func(reqId int) { ck.Log("cid %d done with reqid %d ", ck.clientId, reqId) }(int(args.RequestId))
 	for {
 		leader := ck.getLeaderId()
 		reply := rpc.GetReply{}
-		ck.Log(" sending  rid: %d\n -> op: get\n", ck.reqId)
+		ck.Log(" sending  rid: %d -> op: get", ck.reqId)
 		ok := ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		ck.Log(" received rid: %d\n -> op: get,  response %v\n", ck.reqId, reply)
+		ck.Log(" received rid: %d -> op: get,  response %v", ck.reqId, reply)
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			ck.setNextNodeAsLeader()
@@ -109,12 +109,12 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		Version: version,
 	}
 	retry := false
-	defer func(reqId int) { ck.Log("cid %d done with reqid %d \n", ck.clientId, reqId) }(int(args.RequestId))
+	defer func(reqId int) { ck.Log("cid %d done with reqid %d ", ck.clientId, reqId) }(int(args.RequestId))
 
 	for {
 		leaderId := ck.getLeaderId()
 		reply := rpc.PutReply{}
-		ck.Log("sending  rid: %d\n -> op: put", ck.reqId)
+		ck.Log("sending  rid: %d -> op: put", ck.reqId)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.Put", &args, &reply)
 		if !ok {
 			retry = true
@@ -122,7 +122,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		ck.Log("received rid: %d\n -> op: put,  response %v\n", ck.reqId, reply.Err)
+		ck.Log("received rid: %d -> op: put,  response %v", ck.reqId, reply.Err)
 
 		switch reply.Err {
 		case rpc.ErrWrongLeader:

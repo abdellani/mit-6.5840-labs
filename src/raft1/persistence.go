@@ -93,7 +93,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	index-- // we use commandIndex - 1, internally
 
 	if index < rf.SnapshotData.LastIndex {
-		log.Panic("New Snapshot is less update to date.")
+		return
 	}
 	term := rf._termAt(index)
 	rf.Log("snapshot (li=%d lt=%d)", index, term)

@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"sync"
@@ -130,11 +131,41 @@ func (kv *KVServer) _updateResponse(args rpc.ArgsInterface, response any) {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	if e.Encode(kv.store) != nil ||
+		e.Encode(kv.lastClientsReqs) != nil ||
+		e.Encode(kv.lastClientsReps) != nil {
+		panic("failed to encode kv state")
+	}
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if len(data) < 1 {
+		return
+	}
 	// Your code here
+	var store map[string]Data
+	var lastClientsReqs map[uint64]uint64
+	var lastClientsReps map[uint64]any
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	if d.Decode(&store) != nil ||
+		d.Decode(&lastClientsReqs) != nil ||
+		d.Decode(&lastClientsReps) != nil {
+		panic("error failed while trying to restore")
+	} else {
+		kv.store = store
+		kv.lastClientsReqs = lastClientsReqs
+		kv.lastClientsReps = lastClientsReps
+	}
+
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
@@ -224,6 +255,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, persist
 	labgob.Register(rsm.Op{})
 	labgob.Register(rpc.PutArgs{})
 	labgob.Register(rpc.GetArgs{})
+	labgob.Register(rpc.PutReply{})
+	labgob.Register(rpc.GetReply{})
 
 	kv := &KVServer{
 		me:              me,

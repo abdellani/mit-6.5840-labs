@@ -121,7 +121,7 @@ func (rf *Raft) Log(format string, args ...any) {
 	now := time.Now()
 	formatted := FormatTime(now)
 	message := fmt.Sprintf(format, args...)
-	fmt.Println(formatted, " - ", rf.me, " : ", message)
+	fmt.Println(formatted, " - rf ", rf.me, " : ", message)
 }
 func FormatTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05.000")
@@ -179,6 +179,8 @@ func (rf *Raft) _appendNoOpEntry() {
 }
 func (rf *Raft) _truncateLogsfromIndexAndAfter(index int) {
 	logIndex := rf._logIndex(index)
+	rf.Log("index = %d, logicalIndex = %d", index, logIndex)
+	rf._logState()
 	rf.Logs = rf.Logs[:logIndex]
 	rf.persist()
 }
@@ -226,7 +228,8 @@ func (rf *Raft) _getLogEntry(index int) Log {
 
 func (rf *Raft) _updateCommitIndex(ci int) {
 	if ci < rf.CommitIndex {
-		log.Panicln("Should not decrease CI")
+		rf._logState()
+		log.Panicf("Should not decrease CI (suggested CI=%d)", ci)
 	}
 	if ci == rf.CommitIndex {
 		return
