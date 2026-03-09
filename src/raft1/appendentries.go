@@ -219,6 +219,7 @@ func (rf *Raft) sendInstallSnapshot(term, leaderId int, snapshot Snapshot, peer,
 	rf.mu.Lock()
 	if rf.CurrentTerm < reply.Term {
 		rf._becomeFollower(reply.Term)
+		rf._resetElectionsTimeout()
 		rf.mu.Unlock()
 		return
 	}
