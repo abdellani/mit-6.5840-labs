@@ -9,11 +9,12 @@ package shardkv
 //
 
 import (
-
 	"6.5840/kvsrv1/rpc"
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
+	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardctrler"
-	"6.5840/tester1"
+	"6.5840/shardkv1/shardgrp"
+	tester "6.5840/tester1"
 )
 
 type Clerk struct {
@@ -33,7 +34,6 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 	return ck
 }
 
-
 // Get a key from a shardgrp.  You can use shardcfg.Key2Shard(key) to
 // find the shard responsible for the key and ck.sck.Query() to read
 // the current configuration and lookup the servers in the group
@@ -41,11 +41,23 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 // calling shardgrp.MakeClerk(ck.clnt, servers).
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	return "", 0, ""
+	clnt := ck.getShrdGrpClient(key)
+	return clnt.Get(key)
 }
 
 // Put a key to a shard group.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	return ""
+	clnt := ck.getShrdGrpClient(key)
+	return clnt.Put(key, value, version)
+}
+
+func (ck *Clerk) getShrdGrpClient(key string) *shardgrp.Clerk {
+	shrd := shardcfg.Key2Shard(key)
+	shrdConfig := ck.sck.Query()
+	_, srvs, ok := shrdConfig.GidServers(shrd)
+	if !ok {
+		panic("shard not found on configuration")
+	}
+	return shardgrp.MakeClerk(ck.clnt, srvs)
 }
