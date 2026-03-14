@@ -9,6 +9,8 @@ package shardkv
 //
 
 import (
+	"fmt"
+
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
@@ -41,15 +43,32 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 // calling shardgrp.MakeClerk(ck.clnt, servers).
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	clnt := ck.getShrdGrpClient(key)
-	return clnt.Get(key)
+	for {
+		clnt := ck.getShrdGrpClient(key)
+		value, version, err := clnt.Get(key)
+		if err == rpc.ErrWrongGroup {
+			fmt.Println("wrong group, trying again")
+			continue
+		}
+		return value, version, err
+	}
 }
 
 // Put a key to a shard group.
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
-	clnt := ck.getShrdGrpClient(key)
-	return clnt.Put(key, value, version)
+	for {
+		clnt := ck.getShrdGrpClient(key)
+		err := clnt.Put(key, value, version)
+		switch err {
+		case rpc.ErrWrongGroup:
+			fmt.Println("wrong group, trying again")
+			continue
+		default:
+			return err
+		}
+
+	}
 }
 
 func (ck *Clerk) getShrdGrpClient(key string) *shardgrp.Clerk {

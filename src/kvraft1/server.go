@@ -41,7 +41,7 @@ func (kv *KVServer) DoOp(req any) any {
 	// Your code here
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	op1 := req.(rpc.ArgsInterface)
+	op1 := req.(rpc.CommonKVCommandsInterface)
 	if kv._isCommandRecentlyExecuted(op1) {
 		return kv._getCachedResponse(op1)
 	}
@@ -95,14 +95,14 @@ func (kv *KVServer) DoOp(req any) any {
 	}
 }
 
-func (kv *KVServer) _isCommandRecentlyExecuted(arg rpc.ArgsInterface) bool {
+func (kv *KVServer) _isCommandRecentlyExecuted(arg rpc.CommonKVCommandsInterface) bool {
 	v, ok := kv.lastClientsReqs[arg.GetClientId()]
 	if !ok {
 		return false
 	}
 	return v == arg.GetRequestId()
 }
-func (kv *KVServer) _getCachedResponse(arg rpc.ArgsInterface) any {
+func (kv *KVServer) _getCachedResponse(arg rpc.CommonKVCommandsInterface) any {
 	v, ok := kv.lastClientsReps[arg.GetClientId()]
 	if !ok {
 		panic("tried to retrieve unaccessible key")
@@ -110,7 +110,7 @@ func (kv *KVServer) _getCachedResponse(arg rpc.ArgsInterface) any {
 	return v
 }
 
-func (kv *KVServer) _isCommandTooOld(arg rpc.ArgsInterface) bool {
+func (kv *KVServer) _isCommandTooOld(arg rpc.CommonKVCommandsInterface) bool {
 	v, ok := kv.lastClientsReqs[arg.GetClientId()]
 	if !ok {
 		return false
@@ -118,14 +118,14 @@ func (kv *KVServer) _isCommandTooOld(arg rpc.ArgsInterface) bool {
 	return arg.GetRequestId() < v
 }
 
-func (kv *KVServer) _saveReqIdAndResponse(args rpc.ArgsInterface, response any) {
+func (kv *KVServer) _saveReqIdAndResponse(args rpc.CommonKVCommandsInterface, response any) {
 	kv._updateRecentReqId(args)
 	kv._updateResponse(args, response)
 }
-func (kv *KVServer) _updateRecentReqId(arg rpc.ArgsInterface) {
+func (kv *KVServer) _updateRecentReqId(arg rpc.CommonKVCommandsInterface) {
 	kv.lastClientsReqs[arg.GetClientId()] = arg.GetRequestId()
 }
-func (kv *KVServer) _updateResponse(args rpc.ArgsInterface, response any) {
+func (kv *KVServer) _updateResponse(args rpc.CommonKVCommandsInterface, response any) {
 	kv.lastClientsReps[args.GetClientId()] = response
 }
 

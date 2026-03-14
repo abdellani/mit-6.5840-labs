@@ -7,42 +7,119 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	raft "6.5840/raft1"
+	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp/shardrpc"
 )
 
-func (kv *KVServer) _isCommandRecentlyExecuted(arg rpc.ArgsInterface) bool {
-	v, ok := kv.lastClientsReqs[arg.GetClientId()]
-	if !ok {
+func (kv *KVServer) _canKeyBeProcessOnThisShardGroup(command rpc.CommonKVCommandsInterface) bool {
+	shardId := shardcfg.Key2Shard(command.GetKey())
+	switch kv._shardStatus(shardId) {
+	case SHARD_ALLOWED:
+		return true
+	case SHARD_FROZEN:
+		_, ok := command.(rpc.GetArgs)
+		if ok {
+			return true
+		}
+		_, ok = command.(rpc.PutArgs)
+		if ok {
+			return false
+		}
+		panic("unexpected command")
+	case SHARD_DELETED:
 		return false
+	default:
+		panic("unexpected shard status")
 	}
-	return v == arg.GetRequestId()
 }
-func (kv *KVServer) _getCachedResponse(arg rpc.ArgsInterface) any {
-	v, ok := kv.lastClientsReps[arg.GetClientId()]
+
+func (kv *KVServer) _shardStatus(shid shardcfg.Tshid) ShardStatus {
+	status, ok := kv.Status[shid]
 	if !ok {
-		panic("tried to retrieve unaccessible key")
+		return SHARD_DELETED
 	}
-	return v
+	return status
 }
 
-func (kv *KVServer) _isCommandTooOld(arg rpc.ArgsInterface) bool {
-	v, ok := kv.lastClientsReqs[arg.GetClientId()]
-	if !ok {
-		return false
+func (kv *KVServer) _isCommandRecentlyExecuted(args rpc.CommonClientCommandsInterface) bool {
+	switch op := args.(type) {
+	case rpc.CommonKVCommandsInterface:
+		shrdCache, ok := kv._getShardCache(op.GetKey())
+		if !ok {
+			return false
+		}
+		return shrdCache._isCommandRecentlyExecuted(op)
+	case rpc.CommonClientCommandsInterface:
+		return args.GetRequestId() == kv.LastClientsReqs[args.GetClientId()]
 	}
-	return arg.GetRequestId() < v
+	panic("shoud not reach this !")
 }
 
-func (kv *KVServer) _saveReqIdAndResponse(args rpc.ArgsInterface, response any) {
-	kv._updateRecentReqId(args)
-	kv._updateResponse(args, response)
+// TODO move the repetetive logic related to choosing function depending on type of args
+func (kv *KVServer) _getCachedResponse(args rpc.CommonClientCommandsInterface) any {
+	switch op := args.(type) {
+	case rpc.CommonKVCommandsInterface:
+		shrdCache, ok := kv._getShardCache(op.GetKey())
+		if !ok {
+			panic("trying to access shrdCache that doesn't exist")
+		}
+		return shrdCache._getCachedResponse(op)
+	case rpc.CommonClientCommandsInterface:
+		response, ok := kv.LastClientsResp[op.GetClientId()]
+		if !ok {
+			panic("trying to read empty key on cache")
+		}
+		return response
+	}
+	panic("unkown command type")
 }
 
-func (kv *KVServer) _updateRecentReqId(arg rpc.ArgsInterface) {
-	kv.lastClientsReqs[arg.GetClientId()] = arg.GetRequestId()
+func (kv *KVServer) _isCommandTooOld(args rpc.CommonClientCommandsInterface) bool {
+	switch op := args.(type) {
+	case rpc.CommonKVCommandsInterface:
+		shrdCache, ok := kv._getShardCache(op.GetKey())
+		if !ok {
+			panic("trying to access shrdcache that doesn't exist")
+		}
+		return shrdCache._isCommandTooOld(op)
+	case rpc.CommonClientCommandsInterface:
+		return op.GetRequestId() < kv.LastClientsReqs[op.GetClientId()]
+	default:
+		panic("unrecognized command")
+	}
+
 }
 
-func (kv *KVServer) _updateResponse(args rpc.ArgsInterface, response any) {
-	kv.lastClientsReps[args.GetClientId()] = response
+func (kv *KVServer) _saveReqIdAndResponse(args rpc.CommonClientCommandsInterface, response any) {
+	switch op := args.(type) {
+	case rpc.CommonKVCommandsInterface:
+		shrdkv, ok := kv._getShardCache(op.GetKey())
+		if !ok {
+			panic("trying to access shrdCache that doesn't exist")
+		}
+		shrdkv._saveReqIdAndResponse(op, response)
+		return
+	case rpc.CommonClientCommandsInterface:
+		kv.LastClientsReqs[op.GetClientId()] = op.GetRequestId()
+		kv.LastClientsResp[op.GetClientId()] = response
+		return
+	}
+	panic("cmd not recognized")
+}
+func (kv *KVServer) _getShardKV(key string) (*KV, bool) {
+	shardId := shardcfg.Key2Shard(key)
+	shrdkv, ok := kv.Shrdskv[shardId]
+	return shrdkv, ok
+}
+
+func (kv *KVServer) _getShardCache(key string) (*Cache, bool) {
+	shardId := shardcfg.Key2Shard(key)
+	shrdCache, ok := kv.ShardsCache[shardId]
+	return shrdCache, ok
+}
+
+func (kv *KVServer) _isConfigCommandOutdates(command shardrpc.CommandInterface) bool {
+	return kv.ConfigNum > command.GetNum()
 }
 
 func (kv *KVServer) Log(format string, args ...any) {
@@ -53,4 +130,11 @@ func (kv *KVServer) Log(format string, args ...any) {
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)
 	fmt.Println(formatted, " - srv: ", kv.me, " : ", message)
+}
+
+func (kv *KVServer) _updateConfigNum(num shardcfg.Tnum) {
+	if num < kv.ConfigNum {
+		panic("should not decrease config num")
+	}
+	kv.ConfigNum = num
 }

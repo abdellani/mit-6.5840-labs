@@ -31,7 +31,11 @@ func MakeClerk(clnt *tester.Clnt, server string) kvtest.IKVClerk {
 // arguments. Additionally, reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
-	args := rpc.GetArgs{Key: key}
+	args := rpc.GetArgs{
+		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
+			Key: key,
+		},
+	}
 	reply := rpc.GetReply{}
 	for {
 		ok := ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
@@ -63,7 +67,9 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
 	args := rpc.PutArgs{
-		Key:     key,
+		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
+			Key: key,
+		},
 		Value:   value,
 		Version: version,
 	}

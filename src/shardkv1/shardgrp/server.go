@@ -1,18 +1,28 @@
 package shardgrp
 
 import (
+	"bytes"
+	"fmt"
+	"log"
+	"sync"
 	"sync/atomic"
-
 
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
+	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardgrp/shardrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
+const (
+	SHARD_FROZEN  = 0
+	SHARD_ALLOWED = 1
+	SHARD_DELETED = 2
+)
 
+type ShardStatus int
 type KVServer struct {
 	me   int
 	dead int32 // set by Kill()
@@ -21,9 +31,20 @@ type KVServer struct {
 
 	// Your code here
 	mu              sync.Mutex
-	store           map[string]Data
-	lastClientsReqs map[uint64]uint64
-	lastClientsReps map[uint64]any
+	ConfigNum       shardcfg.Tnum
+	LastClientsReqs map[uint64]uint64
+	LastClientsResp map[uint64]any
+	Shrdskv         map[shardcfg.Tshid]*KV
+	ShardsCache     map[shardcfg.Tshid]*Cache
+	Status          map[shardcfg.Tshid]ShardStatus
+}
+
+type KV struct {
+	Store map[string]Data
+}
+type Cache struct {
+	LastClientsReqs map[uint64]uint64
+	LastClientsResp map[uint64]any
 }
 
 type Data struct {
@@ -34,27 +55,61 @@ type Data struct {
 func (kv *KVServer) DoOp(req any) any {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	op1 := req.(rpc.ArgsInterface)
-	if kv._isCommandRecentlyExecuted(op1) {
-		return kv._getCachedResponse(op1)
+	commonKVCommandArgs, isKVCommand := req.(rpc.CommonKVCommandsInterface)
+	if isKVCommand {
+		// KV commands depends on supported shard
+		if !kv._canKeyBeProcessOnThisShardGroup(commonKVCommandArgs) {
+			fmt.Printf("shard not available! gid=%d srv=%d shrd=%d, status=%v, cmd=%+v\n", kv.gid, kv.me, shardcfg.Key2Shard(commonKVCommandArgs.GetKey()), kv.Status, commonKVCommandArgs)
+			switch req.(type) {
+			case rpc.GetArgs:
+				return rpc.GetReply{Err: rpc.ErrWrongGroup}
+			case rpc.PutArgs:
+				return rpc.PutReply{Err: rpc.ErrWrongGroup}
+			default:
+				panic("command not recognized")
+			}
+		}
+	} else {
+		// shardgroupd cmd
+		//check config number
+		command, ok := req.(shardrpc.CommandInterface)
+		if !ok {
+			log.Panicf("can not recognized command %+v\n", req)
+		}
+		kv._updateConfigNum(command.GetNum())
 	}
-	if kv._isCommandTooOld(op1) {
-		panic(fmt.Sprintf("Try to run a command that's too old (cid=%d , rid=%d)", op1.GetClientId(), op1.GetRequestId()))
+
+	commonClientCommandArg, ok := req.(rpc.CommonClientCommandsInterface)
+	if !ok {
+		panic("can case args to commonClientCommandArg")
+	}
+
+	fmt.Printf("ci=%d, ri=%d\n", commonClientCommandArg.GetClientId(), commonClientCommandArg.GetRequestId())
+	if kv._isCommandRecentlyExecuted(commonClientCommandArg) {
+		return kv._getCachedResponse(commonClientCommandArg)
+	}
+	if kv._isCommandTooOld(commonClientCommandArg) {
+		fmt.Println("too old! ", commonClientCommandArg)
+		panic(fmt.Sprintf("Try to run a command that's too old ")) //(cid=%d , rid=%d)", commonKVCommandArgs.GetClientId(), commonKVCommandArgs.GetRequestId()))
 	}
 	var rs any
 
-	switch op := req.(type) {
+	switch args := req.(type) {
 	case rpc.GetArgs:
-		rs = *kv.GetHandler(&op)
+		return *kv._handleGet(&args)
 	case rpc.PutArgs:
-		rs = *kv.PutHandler(&op)
+		rs = *kv._handlePut(&args)
 	case shardrpc.FreezeShardArgs:
-		panic("this is a freeze ops")
+		rs = *kv._handleFreeze(&args)
+	case shardrpc.InstallShardArgs:
+		rs = *kv._handleInstall(&args)
+	case shardrpc.DeleteShardArgs:
+		rs = *kv._handleDelete(&args)
 	default:
 		panic(fmt.Sprintf("unexpected Op %v", req))
 	}
 
-	kv._saveReqIdAndResponse(op1, rs)
+	kv._saveReqIdAndResponse(commonClientCommandArg, rs)
 	return rs
 
 }
@@ -65,53 +120,66 @@ func (kv *KVServer) Snapshot() []byte {
 	defer kv.mu.Unlock()
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	if e.Encode(kv.store) != nil ||
-		e.Encode(kv.lastClientsReqs) != nil ||
-		e.Encode(kv.lastClientsReps) != nil {
-		panic("failed to encode kv state")
+	if err := e.Encode(kv.ConfigNum); err != nil {
+		panic(err)
 	}
+	if err := e.Encode(kv.LastClientsReqs); err != nil {
+		panic(err)
+	}
+	if err := e.Encode(kv.LastClientsResp); err != nil {
+		panic(err)
+	}
+
+	if err := e.Encode(kv.Shrdskv); err != nil {
+		panic(err)
+	}
+
+	if err := e.Encode(kv.ShardsCache); err != nil {
+		panic(err)
+	}
+
+	if err := e.Encode(kv.Status); err != nil {
+		panic(err)
+	}
+	fmt.Printf("%+v\n", kv.ShardsCache[0])
 	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	fmt.Println("restoring data")
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	if len(data) < 1 {
 		return
 	}
-	var store map[string]Data
-	var lastClientsReqs map[uint64]uint64
-	var lastClientsReps map[uint64]any
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
+	var configNum shardcfg.Tnum
+	var lastClientsReqs map[uint64]uint64
+	var lastClientsResp map[uint64]any
+	var shrdskv map[shardcfg.Tshid]*KV
+	var shrdsCache map[shardcfg.Tshid]*Cache
+	var status map[shardcfg.Tshid]ShardStatus
 
-	if d.Decode(&store) != nil ||
+	if d.Decode(&configNum) != nil ||
 		d.Decode(&lastClientsReqs) != nil ||
-		d.Decode(&lastClientsReps) != nil {
+		d.Decode(&lastClientsResp) != nil ||
+		d.Decode(&shrdskv) != nil ||
+		d.Decode(&shrdsCache) != nil ||
+		d.Decode(&status) != nil {
 		panic("error failed while trying to restore")
 	} else {
-		kv.store = store
-		kv.lastClientsReqs = lastClientsReqs
-		kv.lastClientsReps = lastClientsReps
+		kv.ConfigNum = configNum
+		kv.LastClientsReqs = lastClientsReqs
+		kv.LastClientsResp = lastClientsResp
+		kv.Shrdskv = shrdskv
+		kv.ShardsCache = shrdsCache
+		kv.Status = status
 	}
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
-	kv.mu.Lock()
-	if kv._isCommandRecentlyExecuted(args) {
-		cached, ok := kv._getCachedResponse(args).(rpc.GetReply)
-		if !ok {
-			panic("can't cast cache response to GetReply")
-		}
-		kv.mu.Unlock()
-		reply.Value = cached.Value
-		reply.Version = cached.Version
-		reply.Err = cached.Err
-		return
-	}
-	kv.mu.Unlock()
-
 	err, response := kv.rsm.Submit(*args)
 	kv.Log("srv: (client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
 	switch err {
@@ -157,16 +225,115 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 // shard) and return the key/values stored in that shard.
 func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.FreezeShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	if kv._isConfigCommandOutdates(args) {
+		reply.Err = rpc.ErrVersion
+		kv.mu.Unlock()
+		return
+	}
+	if kv._isCommandRecentlyExecuted(args) {
+		cached, ok := kv._getCachedResponse(args).(shardrpc.FreezeShardReply)
+		if !ok {
+			panic("can't cast cache response to shardrpc.FreezeShardReply")
+		}
+		kv.mu.Unlock()
+		reply.Num = cached.Num
+		reply.State = cached.State
+		reply.Err = cached.Err
+		return
+	}
+	kv.mu.Unlock()
+	err, response := kv.rsm.Submit(*args)
+	switch err {
+	case rpc.OK:
+		result, ok := response.(shardrpc.FreezeShardReply)
+		if !ok {
+			panic("failed to parse FreezeShardReply")
+		}
+		reply.State = result.State
+		reply.Num = result.Num
+		reply.Err = result.Err
+		return
+	case rpc.ErrWrongLeader:
+		reply.Err = rpc.ErrWrongLeader
+		return
+	default:
+		log.Panicf("unexpected response (err=%v)", err)
+	}
 }
 
 // Install the supplied state for the specified shard.
 func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrpc.InstallShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	if kv._isConfigCommandOutdates(args) {
+		kv.mu.Unlock()
+		reply.Err = rpc.ErrVersion
+		return
+	}
+	if kv._isCommandRecentlyExecuted(args) {
+		cached, ok := kv._getCachedResponse(args).(shardrpc.InstallShardReply)
+		if !ok {
+			panic("can't cast cache response to InstallShardReply")
+		}
+		kv.mu.Unlock()
+		reply.Err = cached.Err
+		return
+	}
+	kv.mu.Unlock()
+	err, response := kv.rsm.Submit(*args)
+	switch err {
+	case rpc.OK:
+		result, ok := response.(shardrpc.InstallShardReply)
+		if !ok {
+			panic("failed to parse InstallShardReply")
+		}
+		reply.Err = result.Err
+		return
+	case rpc.ErrWrongLeader:
+		reply.Err = rpc.ErrWrongLeader
+		return
+	default:
+		log.Panicf("unexpected response: err=%v", err)
+	}
+
 }
 
 // Delete the specified shard.
 func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.DeleteShardReply) {
 	// Your code here
+	kv.mu.Lock()
+	if kv._isConfigCommandOutdates(args) {
+		reply.Err = rpc.ErrVersion
+		kv.mu.Unlock()
+		return
+	}
+	if kv._isCommandRecentlyExecuted(args) {
+		cached, ok := kv._getCachedResponse(args).(shardrpc.DeleteShardReply)
+		if !ok {
+			panic("can't cast cache response to DeleteShardReply")
+		}
+		kv.mu.Unlock()
+		reply.Err = cached.Err
+		return
+	}
+	kv.mu.Unlock()
+	err, response := kv.rsm.Submit(*args)
+	switch err {
+	case rpc.OK:
+		result, ok := response.(shardrpc.DeleteShardReply)
+		if !ok {
+			log.Panicf("failed to parse DeleteShardReply (r=%v)\n", response)
+		}
+		reply.Err = result.Err
+		return
+	case rpc.ErrWrongLeader:
+		reply.Err = err
+		return
+	default:
+		log.Panicf("unexpected response (errr = %v)", err)
+	}
+
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -180,6 +347,9 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	// Your code here, if desired.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	fmt.Println("killed sid:", kv.me, " gid:", kv.gid, "state:", kv.Status)
 }
 
 func (kv *KVServer) killed() bool {
@@ -199,20 +369,39 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	labgob.Register(rpc.PutReply{})
 	labgob.Register(rpc.GetReply{})
 	labgob.Register(shardrpc.FreezeShardArgs{})
+	labgob.Register(shardrpc.FreezeShardReply{})
 	labgob.Register(shardrpc.InstallShardArgs{})
+	labgob.Register(shardrpc.InstallShardReply{})
 	labgob.Register(shardrpc.DeleteShardArgs{})
+	labgob.Register(shardrpc.DeleteShardReply{})
 	labgob.Register(rsm.Op{})
+	labgob.Register(KV{})
 
 	kv := &KVServer{
 		gid:             gid,
 		me:              me,
-		store:           make(map[string]Data),
-		lastClientsReqs: make(map[uint64]uint64),
-		lastClientsReps: make(map[uint64]any),
+		Status:          make(map[shardcfg.Tshid]ShardStatus),
+		Shrdskv:         make(map[shardcfg.Tshid]*KV),
+		ShardsCache:     make(map[shardcfg.Tshid]*Cache),
+		LastClientsReqs: make(map[uint64]uint64),
+		LastClientsResp: make(map[uint64]any),
 	}
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 
 	// Your code here
+	fmt.Println("starting server ", kv.gid)
+	if gid == shardcfg.Gid1 {
+		for i := range shardcfg.NShards {
+			kv.Status[shardcfg.Tshid(i)] = SHARD_ALLOWED
+			kv.Shrdskv[shardcfg.Tshid(i)] = &KV{
+				Store: map[string]Data{},
+			}
+			kv.ShardsCache[shardcfg.Tshid(i)] = &Cache{
+				LastClientsReqs: make(map[uint64]uint64),
+				LastClientsResp: make(map[uint64]any),
+			}
+		}
+	}
 
 	return []tester.IService{kv, kv.rsm.Raft()}
 }

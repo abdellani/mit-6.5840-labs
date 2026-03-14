@@ -50,11 +50,13 @@ func MakeClerk(clnt *tester.Clnt, servers []string) kvtest.IKVClerk {
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 	args := rpc.GetArgs{
-		Args: rpc.Args{
-			ClientId:  ck.clientId,
-			RequestId: ck.generateRequestId(),
+		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
+			CommonClientAttributes: rpc.CommonClientAttributes{
+				ClientId:  ck.clientId,
+				RequestId: ck.generateRequestId(),
+			},
+			Key: key,
 		},
-		Key: key,
 	}
 	defer func(reqId int) { ck.Log("cid %d done with reqid %d ", ck.clientId, reqId) }(int(args.RequestId))
 	for {
@@ -100,11 +102,13 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
 
 	args := rpc.PutArgs{
-		Args: rpc.Args{
-			ClientId:  ck.clientId,
-			RequestId: ck.generateRequestId(),
+		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
+			CommonClientAttributes: rpc.CommonClientAttributes{
+				ClientId:  ck.clientId,
+				RequestId: ck.generateRequestId(),
+			},
+			Key: key,
 		},
-		Key:     key,
 		Value:   value,
 		Version: version,
 	}
