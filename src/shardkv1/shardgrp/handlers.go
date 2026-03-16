@@ -2,7 +2,6 @@ package shardgrp
 
 import (
 	"bytes"
-	"fmt"
 	"log"
 
 	"6.5840/kvsrv1/rpc"
@@ -29,7 +28,7 @@ func (kv *KVServer) _handlePut(op *rpc.PutArgs) *rpc.PutReply {
 
 func (kv *KVServer) _handleFreeze(op *shardrpc.FreezeShardArgs) *shardrpc.FreezeShardReply {
 	status, ok := kv.Status[op.Shard]
-	fmt.Printf("freezing shard (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d,ok?=%v) \n", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum, ok)
+	kv.Log("freezing shard (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d,ok?=%v)", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum, ok)
 
 	if !ok {
 		// panic("trying to freeze a shard that doesn't exist")
@@ -64,7 +63,7 @@ func (kv *KVServer) _handleInstall(op *shardrpc.InstallShardArgs) *shardrpc.Inst
 			Err: rpc.OK,
 		}
 	}
-	fmt.Printf("installing shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d) \n", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
+	kv.Log("installing shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d)", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
 
 	if len(op.State) == 0 {
 		log.Panicf("%+v\n%+v\n", op, kv.Status)
@@ -85,7 +84,6 @@ func (kv *KVServer) _handleInstall(op *shardrpc.InstallShardArgs) *shardrpc.Inst
 func (kv *KVServer) _handleDelete(op *shardrpc.DeleteShardArgs) *shardrpc.DeleteShardReply {
 	status, ok := kv.Status[op.Shard]
 	if !ok {
-		// log.Panicf("trying to delete a shard that's already deleted shrd=%d on (gid=%d,sid=%d) \n", op.Shard, kv.gid, kv.me)
 		return &shardrpc.DeleteShardReply{
 			Err: rpc.OK,
 		}
@@ -94,7 +92,7 @@ func (kv *KVServer) _handleDelete(op *shardrpc.DeleteShardArgs) *shardrpc.Delete
 	if status != SHARD_FROZEN {
 		panic("trying to delete a shard that's not frozen")
 	}
-	fmt.Printf("Deleting a shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d) \n", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
+	kv.Log("Deleting a shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d)", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
 
 	delete(kv.Status, op.Shard)
 	delete(kv.Shrdskv, op.Shard)

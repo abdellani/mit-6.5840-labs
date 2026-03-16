@@ -129,7 +129,8 @@ func (kv *KVServer) Log(format string, args ...any) {
 	now := time.Now()
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)
-	fmt.Println(formatted, " - srv: ", kv.me, " : ", message)
+	fmt.Printf("%s - gid %2d srv %2d : %s\n", formatted, kv.gid, kv.me, message)
+
 }
 
 func (kv *KVServer) _updateConfigNum(num shardcfg.Tnum) {

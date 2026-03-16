@@ -59,7 +59,7 @@ func (kv *KVServer) DoOp(req any) any {
 	if isKVCommand {
 		// KV commands depends on supported shard
 		if !kv._canKeyBeProcessOnThisShardGroup(commonKVCommandArgs) {
-			fmt.Printf("shard not available! gid=%d srv=%d shrd=%d, status=%v, cmd=%+v\n", kv.gid, kv.me, shardcfg.Key2Shard(commonKVCommandArgs.GetKey()), kv.Status, commonKVCommandArgs)
+			kv.Log("shard not available! gid=%d srv=%d shrd=%d, status=%v, cmd=%+v", kv.gid, kv.me, shardcfg.Key2Shard(commonKVCommandArgs.GetKey()), kv.Status, commonKVCommandArgs)
 			switch req.(type) {
 			case rpc.GetArgs:
 				return rpc.GetReply{Err: rpc.ErrWrongGroup}
@@ -84,13 +84,11 @@ func (kv *KVServer) DoOp(req any) any {
 		panic("can case args to commonClientCommandArg")
 	}
 
-	fmt.Printf("ci=%d, ri=%d\n", commonClientCommandArg.GetClientId(), commonClientCommandArg.GetRequestId())
 	if kv._isCommandRecentlyExecuted(commonClientCommandArg) {
 		return kv._getCachedResponse(commonClientCommandArg)
 	}
 	if kv._isCommandTooOld(commonClientCommandArg) {
-		fmt.Println("too old! ", commonClientCommandArg)
-		panic(fmt.Sprintf("Try to run a command that's too old ")) //(cid=%d , rid=%d)", commonKVCommandArgs.GetClientId(), commonKVCommandArgs.GetRequestId()))
+		panic("Try to run a command that's too old ")
 	}
 	var rs any
 
@@ -181,7 +179,7 @@ func (kv *KVServer) Restore(data []byte) {
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	err, response := kv.rsm.Submit(*args)
-	kv.Log("srv: (client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
+	kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_GET, args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result := response.(rpc.GetReply)
@@ -196,7 +194,6 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 }
 
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
-	// Your code here
 	kv.mu.Lock()
 	if kv._isCommandRecentlyExecuted(args) {
 		cached, ok := kv._getCachedResponse(args).(rpc.PutReply)
@@ -205,11 +202,12 @@ func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 		}
 		kv.mu.Unlock()
 		reply.Err = cached.Err
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_PUT, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	kv.mu.Unlock()
 	err, response := kv.rsm.Submit(*args)
-	kv.Log("(client Id=%d, req Id=%d ): err =%s", args.ClientId, args.RequestId, err)
+	kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_PUT, args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result := response.(rpc.PutReply)
@@ -228,6 +226,7 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 	kv.mu.Lock()
 	if kv._isConfigCommandOutdates(args) {
 		reply.Err = rpc.ErrVersion
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_FREEZE, args.ClientId, args.RequestId, reply.Err)
 		kv.mu.Unlock()
 		return
 	}
@@ -240,10 +239,12 @@ func (kv *KVServer) FreezeShard(args *shardrpc.FreezeShardArgs, reply *shardrpc.
 		reply.Num = cached.Num
 		reply.State = cached.State
 		reply.Err = cached.Err
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_FREEZE, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	kv.mu.Unlock()
 	err, response := kv.rsm.Submit(*args)
+	kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_FREEZE, args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result, ok := response.(shardrpc.FreezeShardReply)
@@ -269,6 +270,7 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 	if kv._isConfigCommandOutdates(args) {
 		kv.mu.Unlock()
 		reply.Err = rpc.ErrVersion
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_INSTALL, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	if kv._isCommandRecentlyExecuted(args) {
@@ -278,10 +280,12 @@ func (kv *KVServer) InstallShard(args *shardrpc.InstallShardArgs, reply *shardrp
 		}
 		kv.mu.Unlock()
 		reply.Err = cached.Err
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_INSTALL, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	kv.mu.Unlock()
 	err, response := kv.rsm.Submit(*args)
+	kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_INSTALL, args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result, ok := response.(shardrpc.InstallShardReply)
@@ -304,8 +308,9 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 	// Your code here
 	kv.mu.Lock()
 	if kv._isConfigCommandOutdates(args) {
-		reply.Err = rpc.ErrVersion
 		kv.mu.Unlock()
+		reply.Err = rpc.ErrVersion
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_DELETE, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	if kv._isCommandRecentlyExecuted(args) {
@@ -315,10 +320,12 @@ func (kv *KVServer) DeleteShard(args *shardrpc.DeleteShardArgs, reply *shardrpc.
 		}
 		kv.mu.Unlock()
 		reply.Err = cached.Err
+		kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_DELETE, args.ClientId, args.RequestId, reply.Err)
 		return
 	}
 	kv.mu.Unlock()
 	err, response := kv.rsm.Submit(*args)
+	kv.Log("(action=%s,ci=%d,ri=%2d,err=%-10.10s)", ACTION_DELETE, args.ClientId, args.RequestId, err)
 	switch err {
 	case rpc.OK:
 		result, ok := response.(shardrpc.DeleteShardReply)
@@ -349,7 +356,7 @@ func (kv *KVServer) Kill() {
 	// Your code here, if desired.
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	fmt.Println("killed sid:", kv.me, " gid:", kv.gid, "state:", kv.Status)
+	kv.Log(fmt.Sprintf("killed (gid:%d,state:%v)", kv.gid, kv.Status))
 }
 
 func (kv *KVServer) killed() bool {
