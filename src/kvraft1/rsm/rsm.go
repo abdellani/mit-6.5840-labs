@@ -175,7 +175,7 @@ func (rsm *RSM) Reader() {
 		rsm.Log("receive op: me=%d id=%d cmdIdx=%d", op.Me, op.Id, cmd.CommandIndex)
 
 		if op.Me == rsm.me {
-			go rsm.SendResult(op.Id, resp)
+			rsm.SendResult(op.Id, resp)
 		}
 	}
 	rsm.mu.Lock()
@@ -195,8 +195,10 @@ func (rsm *RSM) SendResult(reqId uint64, resp any) {
 	if !ok {
 		return
 	}
-	req <- resp
-	close(req)
+	go func() {
+		//no need to close the channel, GC will do it
+		req <- resp
+	}()
 }
 
 func (rsm *RSM) Log(format string, args ...any) {
