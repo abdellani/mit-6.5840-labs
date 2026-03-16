@@ -33,20 +33,21 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	Debug                   bool
-	Status                  int
-	CurrentTerm             int
-	ElectionTimeout         time.Time
-	VotedFor                int
-	Logs                    []Log
-	CommitIndex             int
-	NextIndex               []int
-	MatchIndex              []int
-	LastAppendEntryAttempt  int //last append entry attempts
-	ApplyIndex              int
-	ApplyCh                 chan raftapi.ApplyMsg
-	ApplyLoopNotificationCh chan struct{}
-	SnapshotData            Snapshot
+	Debug                       bool
+	Status                      int
+	CurrentTerm                 int
+	ElectionTimeout             time.Time
+	VotedFor                    int
+	Logs                        []Log
+	CommitIndex                 int
+	NextIndex                   []int
+	MatchIndex                  []int
+	LastAppendEntryAttempt      int //last append entry attempts
+	ApplyIndex                  int
+	ApplyCh                     chan raftapi.ApplyMsg
+	ApplyLoopNotificationCh     chan struct{}
+	ElectionTimerNotificationCh chan struct{}
+	SnapshotData                Snapshot
 }
 
 type Snapshot struct {
@@ -120,6 +121,7 @@ func (rf *Raft) Kill() {
 	rf.Log("killed!")
 	rf.mu.Lock()
 	close(rf.ApplyLoopNotificationCh)
+	rf._logState()
 	rf.mu.Unlock()
 }
 
@@ -132,19 +134,18 @@ func (rf *Raft) ticker() {
 	ticker := time.NewTicker(time.Millisecond * 100)
 	defer func() { ticker.Stop() }()
 	for rf.killed() == false {
-		<-ticker.C
-		rf.mu.Lock()
-		if rf._isLeader() {
+		select {
+		case <-ticker.C:
+			rf.mu.Lock()
+			if rf._isLeader() {
+				rf.mu.Unlock()
+				rf.broadcastAppendEntry()
+				continue
+			}
 			rf.mu.Unlock()
-			rf.broadcastAppendEntry()
-			continue
-		}
-		if rf._reachedTimeForElections() {
-			rf.mu.Unlock()
+		case <-rf.ElectionTimerNotificationCh:
 			rf.RunElections()
-			continue
 		}
-		rf.mu.Unlock()
 	}
 }
 
@@ -160,16 +161,17 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg) raftapi.Raft {
 	rf := &Raft{
-		CurrentTerm:             0,
-		VotedFor:                -1,
-		Status:                  STATUS_FOLLOWER,
-		CommitIndex:             -1,
-		ApplyIndex:              -1,
-		ApplyCh:                 applyCh,
-		NextIndex:               make([]int, len(peers)),
-		MatchIndex:              make([]int, len(peers)),
-		LastAppendEntryAttempt:  0,
-		ApplyLoopNotificationCh: make(chan struct{}),
+		CurrentTerm:                 0,
+		VotedFor:                    -1,
+		Status:                      STATUS_FOLLOWER,
+		CommitIndex:                 -1,
+		ApplyIndex:                  -1,
+		ApplyCh:                     applyCh,
+		NextIndex:                   make([]int, len(peers)),
+		MatchIndex:                  make([]int, len(peers)),
+		LastAppendEntryAttempt:      0,
+		ApplyLoopNotificationCh:     make(chan struct{}, 1),
+		ElectionTimerNotificationCh: make(chan struct{}, 1),
 		SnapshotData: Snapshot{
 			LastIndex: -1,
 			LastTerm:  -1,
@@ -202,6 +204,8 @@ func (rf *Raft) applyLoop() {
 	rf.Log("Starting Apply Loop")
 	for !rf.killed() {
 		<-rf.ApplyLoopNotificationCh
+		rf.Log("received signal to Applych (ai:%d,ci:%d)", rf.ApplyIndex, rf.CommitIndex)
+
 		rf.mu.Lock()
 		if rf.ApplyIndex == rf.CommitIndex {
 			rf.mu.Unlock()
@@ -231,9 +235,8 @@ func (rf *Raft) applyLoop() {
 				})
 			}
 		}
-
+		rf.Log("sending commands to Applych (ai:%d,ci:%d)", rf.ApplyIndex, rf.CommitIndex)
 		rf.mu.Unlock()
-
 		for _, message := range messages {
 			if rf.killed() {
 				return

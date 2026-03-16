@@ -54,11 +54,40 @@ func (rf *Raft) _voteFor(candidateId int) {
 }
 
 func (rf *Raft) _resetElectionsTimeout() {
-	ms := 400 + (rand.Int63() % 400)
+	ms := 300 + (rand.Int63() % 300)
 	duration := time.Duration(ms) * time.Millisecond
 	rf.ElectionTimeout = time.Now().Add(duration)
+
+	timer := time.NewTimer(duration)
+	go func(t time.Time) {
+		<-timer.C
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.ElectionTimeout != t {
+			return
+		}
+		select {
+		case rf.ElectionTimerNotificationCh <- struct{}{}:
+		default:
+		}
+	}(rf.ElectionTimeout)
 	rf.Log("reset Election Timeout to %s", FormatTime(rf.ElectionTimeout))
 }
+
+// TODO: avoid creating a goroutine on each _resetElectionsTimeout
+// func (rf *Raft) electionTimeoutTimer() {
+// 	timer := time.NewTimer(1 * time.Hour)
+// 	for {
+// 		select {
+// 		case <-timer.C:
+// 		 rf.ElectionTimerNotificationCh <- struct{}{}:
+// 		case duration <- rf.ElectionTimeoutDurationsCh:
+// 			time.reset(duration)
+// 		case rf.killCh:
+// 			return
+// 		}
+// 	}
+// }
 
 func (rf *Raft) _reachedTimeForElections() bool {
 	return time.Now().After(rf.ElectionTimeout)
@@ -107,6 +136,8 @@ func (rf *Raft) _promoteToLeader() {
 		rf.Log("adding noop")
 		rf._appendNoOpEntry()
 	}(rf.CurrentTerm)
+	fmt.Printf("%d promoting to leader (t=%d)", rf.me, rf.CurrentTerm)
+
 	rf.Log("promoting to leader (t=%d)", rf.CurrentTerm)
 }
 
@@ -243,6 +274,7 @@ func (rf *Raft) _sendSignalToApplyLoop() {
 	if rf.killed() {
 		return
 	}
+	rf.Log("sending signal (ai:%d,ci:%d)", rf.ApplyIndex, rf.CommitIndex)
 	select {
 	case rf.ApplyLoopNotificationCh <- struct{}{}:
 	default:
