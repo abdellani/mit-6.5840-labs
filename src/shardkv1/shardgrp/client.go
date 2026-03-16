@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +14,14 @@ import (
 	tester "6.5840/tester1"
 )
 
+const (
+	ACTION_GET     = "GET"
+	ACTION_PUT     = "PUT"
+	ACTION_FREEZE  = "FRZ"
+	ACTION_INSTALL = "INS"
+	ACTION_DELETE  = "DEL"
+)
+
 type Clerk struct {
 	clnt    *tester.Clnt
 	servers []string
@@ -22,6 +29,7 @@ type Clerk struct {
 	clientId uint64
 	reqId    uint64
 	leader   int
+	gid      tester.Tgid
 }
 
 func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
@@ -39,7 +47,6 @@ func MakeClerk(clnt *tester.Clnt, servers []string) *Clerk {
 }
 
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
-	// Your code here
 	args := rpc.GetArgs{
 		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
 			CommonClientAttributes: rpc.CommonClientAttributes{
@@ -51,24 +58,24 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	}
 	nonOkCount := 0
 
-	defer func(reqId int) { ck.Log("cid %d done with reqid %d ", ck.clientId, reqId) }(int(args.RequestId))
+	defer func(reqId int) { ck.Log("done with reqid %d ", reqId) }(int(args.RequestId))
 	for {
-		// fmt.Println("Get")
-		leader := ck.getLeaderId()
+		leader := ck.GetLeaderId()
 		reply := rpc.GetReply{}
-		ck.Log(" sending  rid: %d -> op: get", ck.reqId)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d,key=%-10.10s)", ck.reqId, ACTION_GET, shardcfg.Key2Shard(args.Key), args.Key)
 		ok := ck.clnt.Call(ck.servers[leader], "KVServer.Get", &args, &reply)
-		// fmt.Printf("GET : err  %v  ok? %v nonOkCount %d\n", reply.Err, ok, nonOkCount)
-		if nonOkCount > 10 {
-			// fmt.Println("time to try another group")
-			return "", 0, rpc.ErrWrongGroup
-		}
-		if !ok {
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d,nonOkCount=%d)", ck.reqId, ACTION_GET, ok, reply.Err, ck.leader, nonOkCount)
+		if ok {
+			nonOkCount = 0
+		} else {
+			if nonOkCount > 10 {
+				ck.Log("time to try another group")
+				return "", 0, rpc.ErrWrongGroup
+			}
 			nonOkCount++
 			ck.setNextNodeAsLeader()
 			continue
 		}
-		ck.Log(" received rid: %d -> op: get,  response %v", ck.reqId, reply)
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			ck.setNextNodeAsLeader()
@@ -81,7 +88,6 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 }
 
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
-	// Your code here
 	args := rpc.PutArgs{
 		CommonKVCommandsAttributes: rpc.CommonKVCommandsAttributes{
 			CommonClientAttributes: rpc.CommonClientAttributes{
@@ -94,29 +100,31 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 		Version: version,
 	}
 	retry := false
-	defer func(reqId int) { ck.Log("cid %d done with reqid %d ", ck.clientId, reqId) }(int(args.RequestId))
+	defer func(reqId int) { ck.Log("done with reqid %d ", reqId) }(int(args.RequestId))
 	nonOkCount := 0
 	for {
-		// fmt.Println("PUT")
-		leaderId := ck.getLeaderId()
+		leaderId := ck.GetLeaderId()
 		reply := rpc.PutReply{}
-		ck.Log("sending  rid: %d -> op: put", ck.reqId)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d,key=%-10.10s,vrsn=%4d)", ck.reqId, ACTION_PUT, shardcfg.Key2Shard(args.Key), args.Key, args.Version)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.Put", &args, &reply)
-		// fmt.Printf("PUT : err  %v  ok? %v nonOkCount %d \n", reply.Err, ok, nonOkCount)
-		if nonOkCount > 10 {
-			// fmt.Println("time to try another group")
-			return rpc.ErrWrongGroup
-		}
-		if !ok {
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d,nonOkCount=%d)", ck.reqId, ACTION_PUT, ok, reply.Err, ck.leader, nonOkCount)
+		if ok {
+			nonOkCount = 0
+		} else {
+			if nonOkCount > 10 {
+				ck.Log("time to try another group")
+				return rpc.ErrWrongGroup
+			}
 			nonOkCount++
 			retry = true
 			ck.setNextNodeAsLeader()
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
-		ck.Log("received rid: %d -> op: put,  response %v", ck.reqId, reply.Err)
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			ck.setNextNodeAsLeader()
+			time.Sleep(20 * time.Millisecond)
 		case rpc.ErrVersion:
 			if retry {
 				return rpc.ErrMaybe
@@ -133,7 +141,6 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 }
 
 func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
-	// Your code here
 	args := shardrpc.FreezeShardArgs{
 		CommonClientAttributes: rpc.CommonClientAttributes{
 			ClientId:  ck.clientId,
@@ -144,17 +151,15 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	}
 
 	for {
-		leaderId := ck.getLeaderId()
+		leaderId := ck.GetLeaderId()
 		reply := shardrpc.FreezeShardReply{}
-		ck.Log("sending  rid: %d -> op: put", ck.reqId)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_FREEZE, args.Shard)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.FreezeShard", &args, &reply)
-		fmt.Printf("FreezeShards request (ci=%d,ri=%d,ok?=%v,reply=%v,lid=%d)\n", ck.clientId, ck.reqId, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_FREEZE, ok, reply.Err, ck.leader)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
 		}
-		ck.Log("received rid: %d -> op: put,  response %v", ck.reqId, reply.Err)
-
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			time.Sleep(20 * time.Millisecond)
@@ -170,7 +175,6 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 }
 
 func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
-	// Your code here
 	args := shardrpc.InstallShardArgs{
 		CommonClientAttributes: rpc.CommonClientAttributes{
 			ClientId:  ck.clientId,
@@ -182,18 +186,15 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	}
 
 	for {
-		// fmt.Println("InstallShard")
-		leaderId := ck.getLeaderId()
+		leaderId := ck.GetLeaderId()
 		reply := shardrpc.InstallShardReply{}
-		ck.Log("sending  rid: %d -> op: IS", ck.reqId)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_INSTALL, args.Shard)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.InstallShard", &args, &reply)
-		fmt.Printf("InstallShards request (ci=%d,ri=%d,ok?=%v,reply=%v,lid=%d)\n", ck.clientId, ck.reqId, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_INSTALL, ok, reply.Err, ck.leader)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
 		}
-		ck.Log("received rid: %d -> op: IS,  response %v", ck.reqId, reply.Err)
-
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			time.Sleep(20 * time.Millisecond)
@@ -218,18 +219,15 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	}
 
 	for {
-		// fmt.Println("DeleteShard")
-		leaderId := ck.getLeaderId()
+		leaderId := ck.GetLeaderId()
 		reply := shardrpc.InstallShardReply{}
-		ck.Log("sending  rid: %d -> op: DEL", ck.reqId)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_DELETE, args.Shard)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.DeleteShard", &args, &reply)
-		fmt.Printf("DeleteShards request (ci=%d,ri=%d,ok?=%v,reply=%v,lid=%d)\n", ck.clientId, ck.reqId, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_DELETE, ok, reply.Err, ck.leader)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
 		}
-		ck.Log("received rid: %d -> op: IS,  response %v", ck.reqId, reply.Err)
-
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
 			time.Sleep(20 * time.Millisecond)
@@ -240,26 +238,36 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 			panic(fmt.Sprintf("unexpected error :'%v' ", reply.Err))
 		}
 	}
-
 }
 
 func (ck *Clerk) generateRequestId() uint64 {
 	return atomic.AddUint64(&ck.reqId, 1)
 }
 
+func (ck *Clerk) DecRequestId() {
+	ck.reqId--
+}
+
 func (ck *Clerk) setNextNodeAsLeader() {
 	ck.leader = (ck.leader + 1) % len(ck.servers)
 }
-func (ck *Clerk) getLeaderId() int {
+func (ck *Clerk) GetLeaderId() int {
 	return ck.leader
 }
 
 func (ck *Clerk) Log(format string, args ...any) {
-	if os.Getenv("DEBUG") != "true" {
-		return
-	}
 	now := time.Now()
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)
-	fmt.Println(formatted, " - ci :", ck.clientId, " : ", message)
+	fmt.Printf("%s - ci %15d : %s \n", formatted, ck.clientId, message)
+}
+
+func (ck *Clerk) UpdateServers(gid tester.Tgid, leader int, srvs []string) {
+	ck.gid = gid
+	ck.leader = leader
+	ck.servers = srvs
+}
+
+func (ck *Clerk) GetGid() tester.Tgid {
+	return ck.gid
 }

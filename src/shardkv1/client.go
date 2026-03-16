@@ -23,16 +23,22 @@ type Clerk struct {
 	clnt *tester.Clnt
 	sck  *shardctrler.ShardCtrler
 	// You will have to modify this struct.
+	config  *shardcfg.ShardConfig
+	client  *shardgrp.Clerk
+	leaders map[tester.Tgid]int
 }
 
 // The tester calls MakeClerk and passes in a shardctrler so that
 // client can call it's Query method
 func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk {
 	ck := &Clerk{
-		clnt: clnt,
-		sck:  sck,
+		clnt:    clnt,
+		sck:     sck,
+		client:  shardgrp.MakeClerk(clnt, []string{}),
+		leaders: make(map[tester.Tgid]int),
 	}
 	// You'll have to add code here.
+	ck.updateConfig()
 	return ck
 }
 
@@ -44,9 +50,11 @@ func MakeClerk(clnt *tester.Clnt, sck *shardctrler.ShardCtrler) kvtest.IKVClerk 
 func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 	// You will have to modify this function.
 	for {
-		clnt := ck.getShrdGrpClient(key)
-		value, version, err := clnt.Get(key)
+		ck.prepareClientForKey(key)
+		value, version, err := ck.client.Get(key)
 		if err == rpc.ErrWrongGroup {
+			ck.updateConfig()
+			ck.client.DecRequestId()
 			fmt.Println("wrong group, trying again")
 			continue
 		}
@@ -58,10 +66,12 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	// You will have to modify this function.
 	for {
-		clnt := ck.getShrdGrpClient(key)
-		err := clnt.Put(key, value, version)
+		ck.prepareClientForKey(key)
+		err := ck.client.Put(key, value, version)
 		switch err {
 		case rpc.ErrWrongGroup:
+			ck.updateConfig()
+			ck.client.DecRequestId()
 			fmt.Println("wrong group, trying again")
 			continue
 		default:
@@ -71,12 +81,28 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 	}
 }
 
-func (ck *Clerk) getShrdGrpClient(key string) *shardgrp.Clerk {
+func (ck *Clerk) prepareClientForKey(key string) {
 	shrd := shardcfg.Key2Shard(key)
-	shrdConfig := ck.sck.Query()
-	_, srvs, ok := shrdConfig.GidServers(shrd)
+	gid, srvs, ok := ck.config.GidServers(shrd)
 	if !ok {
-		panic("shard not found on configuration")
+		panic("client not define for group")
 	}
-	return shardgrp.MakeClerk(ck.clnt, srvs)
+	leader, ok := ck.leaders[gid]
+	if !ok {
+		ck.leaders[gid] = 0
+		leader = 0
+	}
+	ck.leaders[ck.client.GetGid()] = ck.client.GetLeaderId()
+	ck.client.UpdateServers(gid%tester.Tgid(len(srvs)), leader, srvs)
+}
+
+func (ck *Clerk) updateConfig() {
+	config := ck.sck.Query()
+	if config == nil {
+		return
+	}
+	if ck.config != nil && ck.config.Num == config.Num {
+		return
+	}
+	ck.config = config
 }
