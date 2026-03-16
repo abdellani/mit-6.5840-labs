@@ -136,7 +136,6 @@ func (rf *Raft) _promoteToLeader() {
 		rf.Log("adding noop")
 		rf._appendNoOpEntry()
 	}(rf.CurrentTerm)
-	fmt.Printf("%d promoting to leader (t=%d)", rf.me, rf.CurrentTerm)
 
 	rf.Log("promoting to leader (t=%d)", rf.CurrentTerm)
 }

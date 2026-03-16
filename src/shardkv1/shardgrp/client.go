@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -256,6 +257,9 @@ func (ck *Clerk) GetLeaderId() int {
 }
 
 func (ck *Clerk) Log(format string, args ...any) {
+	if os.Getenv("DEBUG") != "true" {
+		return
+	}
 	now := time.Now()
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)

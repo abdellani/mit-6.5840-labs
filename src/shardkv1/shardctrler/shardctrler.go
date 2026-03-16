@@ -7,11 +7,15 @@ package shardctrler
 import (
 	"fmt"
 	"log"
+	"math/rand"
+	"os"
 	"sync"
+	"time"
 
 	kvsrv "6.5840/kvsrv1"
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
+	raft "6.5840/raft1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardgrp"
 	tester "6.5840/tester1"
@@ -25,13 +29,17 @@ type ShardCtrler struct {
 	killed int32 // set by Kill()
 
 	// Your data here.
+	me    int64
 	mu    sync.Mutex
 	clnts map[tester.Tgid]*shardgrp.Clerk
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
 func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
-	sck := &ShardCtrler{clnt: clnt}
+	sck := &ShardCtrler{
+		clnt: clnt,
+		me:   (rand.Int63() % 10000),
+	}
 	srv := tester.ServerName(tester.GRP0, 0)
 	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
 	// Your code here.
@@ -43,6 +51,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
+	sck.Log("InitController")
 	for {
 		currentConf := sck.Query()
 		newConfigString, _, err := sck.Get("new")
@@ -55,9 +64,8 @@ func (sck *ShardCtrler) InitController() {
 		if currentConf.Num == newConfig.Num {
 			return
 		}
-		fmt.Printf("currentConf.Num %d -- newConfig.Num %d\n", currentConf.Num, newConfig.Num)
-
-		fmt.Printf("rerun config %d\n", newConfig.Num)
+		sck.Log("ccn:%d -- ncn: %d", currentConf.Num, newConfig.Num)
+		sck.Log("rerun ncn %d\n", newConfig.Num)
 		sck.UpdateShardGrp(currentConf, newConfig)
 
 	}
@@ -70,19 +78,22 @@ func (sck *ShardCtrler) InitController() {
 // lists shardgrp shardcfg.Gid1 for all shards.
 func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
-	fmt.Println("Init config")
+	sck.Log("start: Init config")
+	defer func() { sck.Log("done: Init config") }()
+
 	serializedConfig := cfg.String()
 	for {
 		err := sck.Put("current", serializedConfig, 0)
 		switch err {
 		case rpc.OK:
+			sck.Log("saved configuration %d", cfg.Num)
 			return
 		case rpc.ErrMaybe:
 			_, _, err := sck.Get("current")
 			if err == rpc.OK {
 				return
 			}
-			fmt.Println("retrying ...")
+			fmt.Println("retrying to save current configration")
 			continue
 		default:
 			log.Panicf("error %v", err)
@@ -96,28 +107,29 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
+	sck.Log("start:ChangeConfigTo(%d)", new.Num)
+	defer func() { sck.Log("done: ChangeConfigTo(%d)", new.Num) }()
+	sck.Log("saving cn %d to 'new'", new.Num)
 	old := sck.Query()
 	_, v, err := sck.Get("new")
 	serializedConfig := new.String()
-	fmt.Printf("saving configNum %d to 'new'\n", new.Num)
+
 	switch err {
 	case rpc.ErrNoKey:
 		err = sck.Put("new", serializedConfig, 0)
-		fmt.Printf("err %v\n", err)
 	case rpc.OK:
 		err = sck.Put("new", serializedConfig, v)
-		fmt.Printf("err %v\n", err)
 	default:
 		panic(err)
 	}
-
+	sck.Log("save? %v", err)
 	sck.UpdateShardGrp(old, new)
 
 }
 func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 	shardsToMove := *sck.CalculateShardsToMove(old, new)
-	fmt.Printf("Applying: old config=%d --> new config=%d\n", old.Num, new.Num)
-	defer func() { fmt.Printf("done with config num=%d\n", new.Num) }()
+	sck.Log("Applying: oc=%d -> nc=%d", old.Num, new.Num)
+	defer func() { sck.Log("done: oc=%d -> nc=%d", old.Num, new.Num) }()
 	var wg sync.WaitGroup
 	for _, shardToMove := range shardsToMove {
 		wg.Add(1)
@@ -151,6 +163,7 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 		}(shardToMove)
 	}
 	wg.Wait()
+	sck.Log("Saving Result: oc=%d -> nc=%d", old.Num, new.Num)
 	serializedConfig := new.String()
 	for {
 		err := sck.Put("current", serializedConfig, rpc.Tversion(old.Num))
@@ -160,12 +173,7 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 		case rpc.ErrMaybe:
 			rec, v, _ := sck.Get("current")
 			if v == rpc.Tversion(old.Num)+1 {
-				fmt.Println("ErrMaybe, retrying ...")
-				received := shardcfg.FromString(rec)
-				fmt.Printf("old %+v\n", old)
-				fmt.Printf("received %+v\n", received)
-				fmt.Printf("v = %d", v)
-				fmt.Printf("new %+v\n", new)
+				shardcfg.FromString(rec)
 				return
 			}
 			fmt.Println("retrying")
@@ -181,7 +189,7 @@ func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	case rpc.OK:
 		return shardcfg.FromString(serialized)
 	default:
-		fmt.Println("error")
+		fmt.Println("Query failed")
 		return nil
 	}
 }
@@ -195,4 +203,15 @@ func (sck *ShardCtrler) CalculateShardsToMove(old, new *shardcfg.ShardConfig) *[
 		result = append(result, shardcfg.Tshid(i))
 	}
 	return &result
+}
+
+func (sck *ShardCtrler) Log(format string, args ...any) {
+	if os.Getenv("DEBUG") != "true" {
+		return
+	}
+	now := time.Now()
+	formatted := raft.FormatTime(now)
+	message := fmt.Sprintf(format, args...)
+	fmt.Printf("%s - sh %5d : %s \n", formatted, sck.me, message)
+
 }
