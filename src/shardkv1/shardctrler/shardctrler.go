@@ -118,30 +118,23 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 	shardsToMove := *sck.CalculateShardsToMove(old, new)
 	fmt.Printf("Applying: old config=%d --> new config=%d\n", old.Num, new.Num)
 	defer func() { fmt.Printf("done with config num=%d\n", new.Num) }()
+	var wg sync.WaitGroup
 	for _, shardToMove := range shardsToMove {
-		func(shardToMove shardcfg.Tshid) {
-			gidSRC, srvsSRC, ok := old.GidServers(shardToMove)
+		wg.Add(1)
+		go func(shardToMove shardcfg.Tshid) {
+			defer wg.Done()
+			_, srvsSRC, ok := old.GidServers(shardToMove)
 			if !ok {
-				panic("error retrieving shard's details from old configuration")
+				panic("error retrieving shard's details from old configuration_")
 			}
 
-			gidDST, srvsDST, ok := new.GidServers(shardToMove)
+			_, srvsDST, ok := new.GidServers(shardToMove)
 			if !ok {
 				panic("error retrieving shard's details from new configuration")
 			}
 
-			sck.mu.Lock()
-			clientSRC, ok := sck.clnts[gidSRC]
-			if !ok {
-				clientSRC = shardgrp.MakeClerk(sck.clnt, srvsSRC)
-				sck.clnts[gidSRC] = clientSRC
-			}
-			clientDST, ok := sck.clnts[gidDST]
-			if !ok {
-				clientDST = shardgrp.MakeClerk(sck.clnt, srvsDST)
-				sck.clnts[gidDST] = clientDST
-			}
-			sck.mu.Unlock()
+			clientSRC := shardgrp.MakeClerk(sck.clnt, srvsSRC)
+			clientDST := shardgrp.MakeClerk(sck.clnt, srvsDST)
 
 			state, err := clientSRC.FreezeShard(shardToMove, new.Num)
 			if err != rpc.OK {
@@ -157,6 +150,7 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 			}
 		}(shardToMove)
 	}
+	wg.Wait()
 	serializedConfig := new.String()
 	for {
 		err := sck.Put("current", serializedConfig, rpc.Tversion(old.Num))
