@@ -34,7 +34,7 @@ func (kv *KVServer) _handleFreeze(op *shardrpc.FreezeShardArgs) *shardrpc.Freeze
 		return &shardrpc.FreezeShardReply{
 			State: []byte{},
 			Num:   kv.ConfigNum,
-			Err:   rpc.OK,
+			Err:   rpc.ErrNoKey,
 		}
 	}
 
@@ -63,12 +63,6 @@ func (kv *KVServer) _handleInstall(op *shardrpc.InstallShardArgs) *shardrpc.Inst
 		}
 	}
 	kv.Log("installing shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d)", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
-
-	if len(op.State) == 0 {
-		return &shardrpc.InstallShardReply{
-			Err: rpc.OK,
-		}
-	}
 
 	shardKV, shardCache := kv._decodeShardKV(op.State)
 	kv.Shrdskv[op.Shard] = shardKV
