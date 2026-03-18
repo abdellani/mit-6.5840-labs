@@ -173,6 +173,8 @@ func (ck *Clerk) FreezeShard(ctx context.Context, s shardcfg.Tshid, num shardcfg
 			return nil, reply.Err
 		case rpc.OK:
 			return reply.State, reply.Err
+		case rpc.ErrNoKey:
+			return nil, reply.Err
 		default:
 			panic(fmt.Sprintf("unexpected error :'%v' ", reply.Err))
 		}

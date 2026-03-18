@@ -62,7 +62,7 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here.
-	fmt.Println("kvsrv: PUT ", args.Key)
+	fmt.Printf("kvsrv: PUT (key%v,v:%s) \n", args.Key, args.Value)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	oldValue, exists := kv.Store[args.Key]

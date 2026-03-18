@@ -55,9 +55,20 @@ func (sck *ShardCtrler) InitController() {
 
 	currentConf := sck.Query()
 	newConfig, _ := sck.QueryNewConf()
-
+	fmt.Printf("cc %v\n", currentConf.Shards)
+	fmt.Printf("nc %v \n", newConfig.Shards)
 	if currentConf.Num == newConfig.Num {
 		sck.Log("cconf:%d -- nconf: %d (no work needed)", currentConf.Num, newConfig.Num)
+
+		sck.Log("checking n+1 %d", currentConf.Num)
+		target := fmt.Sprintf("%d", currentConf.Num+1)
+		conf, _, err := sck.Get(target)
+		sck.Log("err %v", err)
+		if err == rpc.OK {
+			sck.Log("calling ChangeConfigTo")
+			configuration := shardcfg.FromString(conf)
+			sck.ChangeConfigTo(configuration)
+		}
 		return
 	}
 	sck.Log("ccn:%d -- ncn: %d", currentConf.Num, newConfig.Num)
@@ -135,35 +146,78 @@ func (sck *ShardCtrler) ChangeConfigTo(newConfig *shardcfg.ShardConfig) {
 	sck.Log("start:ChangeConfigTo(%d)", newConfig.Num)
 	defer func() { sck.Log("done: ChangeConfigTo(%d)", newConfig.Num) }()
 
+	serializedNewConfig1 := newConfig.String()
+	err1 := sck.Put(fmt.Sprintf("%d", newConfig.Num), serializedNewConfig1, 0)
+	if err1 == rpc.OK {
+		fmt.Printf("save config %d (tmp)\n", newConfig.Num)
+	}
+
 	currentConfig := sck.Query()
-	if newConfig.Num == currentConfig.Num {
+	if newConfig.Num <= currentConfig.Num {
 		sck.Log("current configuration is already at Num %d", currentConfig.Num)
 		return
 	}
-
+	sck.Log("ccn:%d,config:%v", currentConfig.Num, currentConfig.Shards)
 	newStoredConfig, v := sck.QueryNewConf()
-	if newConfig.Num == newStoredConfig.Num {
+	if newConfig.Num <= newStoredConfig.Num {
 		sck.Log("already another process working ")
 		return
 	}
 
+	sck.Log("ncn:%d,newconfig:%v", newConfig.Num, newConfig.Shards)
 	sck.Log("saving cn %d (v=%d) to 'new' (old=%d)", newConfig.Num, v, newStoredConfig.Num)
 
 	serializedNewConfig := newConfig.String()
-	err := sck.Put("new", serializedNewConfig, v)
+	for {
+		err := sck.Put("new", serializedNewConfig, v)
 
-	sck.Log("save? %v", err)
-	if err == rpc.ErrVersion {
-		sck.Log("another process is already working on cn=%d", newConfig.Num)
-		return
+		sck.Log("save? %v", err)
+		switch err {
+		case rpc.OK:
+			sck.UpdateShardGrp(currentConfig, newConfig)
+			return
+		case rpc.ErrVersion:
+			sck.Log("another process is already working on cn=%d", newConfig.Num)
+			return
+		case rpc.ErrMaybe:
+			n1, v1 := sck.QueryNewConf()
+			if v1 == v {
+				// not saved
+				continue
+			}
+			if v1 < v {
+				panic("should not happen!")
+			}
+			// maybe another server save at the same time !
+			// check configuration
+			if n1.Num != newConfig.Num {
+				sck.Log("another server already saved new cofig  ")
+				return
+			}
+			//same num
+			// maybe same num, but a different shard configuration
+			for i := range len(n1.Shards) {
+				if n1.Shards[i] != newConfig.Shards[i] {
+					sck.Log("another server already save ")
+					return
+				}
+			}
+			//same config, can relaunch now !!!
+			sck.UpdateShardGrp(currentConfig, newConfig)
+			return
+		default:
+			panic(err)
+		}
+
 	}
-	sck.UpdateShardGrp(currentConfig, newConfig)
 
 }
 func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 	shardsToMove := *sck.CalculateShardsToMove(old, new)
 	sck.Log("Applying: oc=%d -> nc=%d", old.Num, new.Num)
-
+	if old.Num >= new.Num {
+		panic("should not decrease config num")
+	}
 	defer func() { sck.Log("done: oc=%d -> nc=%d", old.Num, new.Num) }()
 	ctx, cancel := context.WithCancel(context.Background())
 	var wl sync.WaitGroup
@@ -175,13 +229,18 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 		defer ticker.Stop()
 		defer wl.Done()
 		for {
-			<-ticker.C
-			if sck.IsCurrentConfigSync() {
-				cancel()
-				sck.Log("synchronized. quitting ... ")
+			select {
+			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				query := sck.Query()
+				if query.Num >= new.Num {
+					cancel()
+					sck.Log("this loop (%d->%d) is already outdated. quitting ... ", old.Num, new.Num)
+					return
+				}
+				sck.Log("not synchronized. ")
 			}
-			sck.Log("not synchronized. ")
 		}
 	}(cancel)
 
@@ -203,6 +262,10 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 			clientDST := shardgrp.MakeClerk(sck.clnt, srvsDST)
 
 			state, err := clientSRC.FreezeShard(ctx, shardToMove, new.Num)
+			if err == rpc.ErrNoKey {
+				//considering that this key is already moved by another process
+				return
+			}
 			if err != rpc.OK {
 				sck.Log("aborting on freeze")
 				return
@@ -232,10 +295,11 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 		}
 
 		err := sck.Put("current", serializedConfig, rpc.Tversion(old.Num))
-		sck.Log("saved results %s \n", err)
+		sck.Log("saved results %s ", err)
 		switch err {
 		case rpc.OK:
 			sck.Log("updated cc:%d", new.Num)
+			cancel()
 			return
 		case rpc.ErrMaybe:
 			c, _, err1 := sck.Get("current")
@@ -244,9 +308,11 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 				cnf := shardcfg.FromString(c)
 				if cnf.Num == new.Num {
 					sck.Log("current configuration saved")
+					cancel()
 					return
 				} else if cnf.Num > new.Num {
 					sck.Log("current config already have more recent configuration n saved")
+					cancel()
 					return
 				} else {
 					continue
@@ -257,7 +323,7 @@ func (sck *ShardCtrler) UpdateShardGrp(old, new *shardcfg.ShardConfig) {
 		case rpc.ErrVersion:
 			sck.Log("error:ErrVersion 'current' is already updated ")
 		default:
-			return
+			panic(err)
 		}
 	}
 }
