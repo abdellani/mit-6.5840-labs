@@ -6,8 +6,13 @@ import (
 )
 
 type FreezeShardArgs struct {
+	rpc.CommonClientAttributes
 	Shard shardcfg.Tshid
 	Num   shardcfg.Tnum
+}
+
+func (a FreezeShardArgs) GetNum() shardcfg.Tnum {
+	return a.Num
 }
 
 type FreezeShardReply struct {
@@ -17,9 +22,14 @@ type FreezeShardReply struct {
 }
 
 type InstallShardArgs struct {
+	rpc.CommonClientAttributes
 	Shard shardcfg.Tshid
 	State []byte
 	Num   shardcfg.Tnum
+}
+
+func (a InstallShardArgs) GetNum() shardcfg.Tnum {
+	return a.Num
 }
 
 type InstallShardReply struct {
@@ -27,10 +37,19 @@ type InstallShardReply struct {
 }
 
 type DeleteShardArgs struct {
+	rpc.CommonClientAttributes
 	Shard shardcfg.Tshid
 	Num   shardcfg.Tnum
 }
 
+func (a DeleteShardArgs) GetNum() shardcfg.Tnum {
+	return a.Num
+}
+
 type DeleteShardReply struct {
 	Err rpc.Err
+}
+
+type CommandInterface interface {
+	GetNum() shardcfg.Tnum
 }

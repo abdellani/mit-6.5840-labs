@@ -17,26 +17,39 @@ const (
 )
 
 type Tversion uint64
-type Args struct {
+type CommonClientAttributes struct {
 	ClientId  uint64
 	RequestId uint64
 }
+type CommonKVCommandsAttributes struct {
+	CommonClientAttributes
+	Key string
+}
 
-func (r Args) GetClientId() uint64 {
+func (r CommonClientAttributes) GetClientId() uint64 {
 	return r.ClientId
 }
 
-func (r Args) GetRequestId() uint64 {
+func (r CommonClientAttributes) GetRequestId() uint64 {
 	return r.RequestId
 }
 
-type ArgsInterface interface {
+func (r CommonKVCommandsAttributes) GetKey() string {
+	return r.Key
+}
+
+type CommonClientCommandsInterface interface {
 	GetClientId() uint64
 	GetRequestId() uint64
 }
+
+type CommonKVCommandsInterface interface {
+	GetClientId() uint64
+	GetRequestId() uint64
+	GetKey() string
+}
 type PutArgs struct {
-	Args
-	Key     string
+	CommonKVCommandsAttributes
 	Value   string
 	Version Tversion
 }
@@ -46,8 +59,7 @@ type PutReply struct {
 }
 
 type GetArgs struct {
-	Args
-	Key string
+	CommonKVCommandsAttributes
 }
 
 type GetReply struct {
