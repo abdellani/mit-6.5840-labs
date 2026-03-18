@@ -93,11 +93,8 @@ func (ck *Clerk) prepareClientForKey(key string) {
 		leader = 0
 	}
 	ck.leaders[ck.client.GetGid()] = ck.client.GetLeaderId()
-	if gid != ck.client.GetGid() {
-		ck.client.Log("reconfiguring %d -> %d", ck.client.GetGid(), gid)
-
-	}
-	ck.client.UpdateServers(gid%tester.Tgid(len(srvs)), leader, srvs)
+	ck.client.Log("reconfiguring %d -> %d (srv=%v)", ck.client.GetGid(), gid, srvs)
+	ck.client.UpdateServers(gid, leader, srvs)
 }
 
 func (ck *Clerk) updateConfig() {
