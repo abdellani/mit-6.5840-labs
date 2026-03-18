@@ -137,5 +137,8 @@ func (kv *KVServer) _updateConfigNum(num shardcfg.Tnum) {
 	if num < kv.ConfigNum {
 		panic("should not decrease config num")
 	}
+	if kv.ConfigNum < num {
+		fmt.Println("updating config to ", num)
+	}
 	kv.ConfigNum = num
 }
