@@ -2,7 +2,6 @@ package shardgrp
 
 import (
 	"bytes"
-	"log"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
@@ -66,7 +65,6 @@ func (kv *KVServer) _handleInstall(op *shardrpc.InstallShardArgs) *shardrpc.Inst
 	kv.Log("installing shard  (shrd=%d,num=%d) on (gid=%d,sid=%d,cn=%d)", op.Shard, op.Num, kv.gid, kv.me, kv.ConfigNum)
 
 	if len(op.State) == 0 {
-		log.Panicf("%+v\n%+v\n", op, kv.Status)
 		return &shardrpc.InstallShardReply{
 			Err: rpc.OK,
 		}

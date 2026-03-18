@@ -1,10 +1,10 @@
 package shardgrp
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -141,7 +141,7 @@ func (ck *Clerk) Put(key string, value string, version rpc.Tversion) rpc.Err {
 
 }
 
-func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
+func (ck *Clerk) FreezeShard(ctx context.Context, s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.Err) {
 	args := shardrpc.FreezeShardArgs{
 		CommonClientAttributes: rpc.CommonClientAttributes{
 			ClientId:  ck.clientId,
@@ -152,18 +152,22 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	}
 
 	for {
+		select {
+		case <-ctx.Done():
+			return nil, rpc.ErrMaybe
+		default:
+		}
 		leaderId := ck.GetLeaderId()
 		reply := shardrpc.FreezeShardReply{}
-		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_FREEZE, args.Shard)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d,cnum=%d,lid=%4d)", ck.reqId, ACTION_FREEZE, args.Shard, num, ck.leader)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.FreezeShard", &args, &reply)
-		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_FREEZE, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v)", ck.reqId, ACTION_FREEZE, ok, reply.Err)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
 		}
 		switch reply.Err {
 		case rpc.ErrWrongLeader:
-			time.Sleep(20 * time.Millisecond)
 			ck.setNextNodeAsLeader()
 		case rpc.ErrVersion:
 			return nil, reply.Err
@@ -175,7 +179,7 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	}
 }
 
-func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
+func (ck *Clerk) InstallShard(ctx context.Context, s shardcfg.Tshid, state []byte, num shardcfg.Tnum) rpc.Err {
 	args := shardrpc.InstallShardArgs{
 		CommonClientAttributes: rpc.CommonClientAttributes{
 			ClientId:  ck.clientId,
@@ -187,11 +191,16 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	}
 
 	for {
+		select {
+		case <-ctx.Done():
+			return rpc.ErrMaybe
+		default:
+		}
 		leaderId := ck.GetLeaderId()
 		reply := shardrpc.InstallShardReply{}
-		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_INSTALL, args.Shard)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d,cnum=%d,lid=%4d)", ck.reqId, ACTION_INSTALL, args.Shard, num, ck.leader)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.InstallShard", &args, &reply)
-		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_INSTALL, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v)", ck.reqId, ACTION_INSTALL, ok, reply.Err)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
@@ -209,7 +218,7 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 
 }
 
-func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
+func (ck *Clerk) DeleteShard(ctx context.Context, s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	args := shardrpc.DeleteShardArgs{
 		CommonClientAttributes: rpc.CommonClientAttributes{
 			ClientId:  ck.clientId,
@@ -220,11 +229,16 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	}
 
 	for {
+		select {
+		case <-ctx.Done():
+			return rpc.ErrMaybe
+		default:
+		}
 		leaderId := ck.GetLeaderId()
 		reply := shardrpc.InstallShardReply{}
-		ck.Log("SEND (ri=%4d,op=%s,shard=%d)", ck.reqId, ACTION_DELETE, args.Shard)
+		ck.Log("SEND (ri=%4d,op=%s,shard=%d,cnum=%d,lid=%4d)", ck.reqId, ACTION_DELETE, args.Shard, num, ck.leader)
 		ok := ck.clnt.Call(ck.servers[leaderId], "KVServer.DeleteShard", &args, &reply)
-		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v,lid=%4d)", ck.reqId, ACTION_DELETE, ok, reply.Err, ck.leader)
+		ck.Log("RESP (ri=%4d,op=%s,ok?=%v,reply=%v)", ck.reqId, ACTION_DELETE, ok, reply.Err)
 		if !ok {
 			ck.setNextNodeAsLeader()
 			continue
@@ -257,9 +271,9 @@ func (ck *Clerk) GetLeaderId() int {
 }
 
 func (ck *Clerk) Log(format string, args ...any) {
-	if os.Getenv("DEBUG") != "true" {
-		return
-	}
+	// if os.Getenv("DEBUG") != "true" {
+	// 	return
+	// }
 	now := time.Now()
 	formatted := raft.FormatTime(now)
 	message := fmt.Sprintf(format, args...)

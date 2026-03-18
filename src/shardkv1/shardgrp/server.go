@@ -76,7 +76,21 @@ func (kv *KVServer) DoOp(req any) any {
 		if !ok {
 			log.Panicf("can not recognized command %+v\n", req)
 		}
-		kv._updateConfigNum(command.GetNum())
+		if kv._isConfigCommandOutdates(command) {
+			switch req.(type) {
+			case shardrpc.FreezeShardArgs:
+				return shardrpc.FreezeShardReply{Err: rpc.ErrVersion}
+			case shardrpc.InstallShardArgs:
+				return shardrpc.InstallShardReply{Err: rpc.ErrVersion}
+			case shardrpc.DeleteShardArgs:
+				return shardrpc.DeleteShardReply{Err: rpc.ErrVersion}
+			default:
+				panic("unexpected type")
+			}
+
+		} else {
+			kv._updateConfigNum(command.GetNum())
+		}
 	}
 
 	commonClientCommandArg, ok := req.(rpc.CommonClientCommandsInterface)
@@ -396,7 +410,7 @@ func StartServerShardGrp(servers []*labrpc.ClientEnd, gid tester.Tgid, me int, p
 	kv.rsm = rsm.MakeRSM(servers, me, persister, maxraftstate, kv)
 
 	// Your code here
-	fmt.Println("starting server ", kv.gid)
+	fmt.Printf("starting server id:%d,gid:%d\n", kv.me, kv.gid)
 	if gid == shardcfg.Gid1 {
 		for i := range shardcfg.NShards {
 			kv.Status[shardcfg.Tshid(i)] = SHARD_ALLOWED

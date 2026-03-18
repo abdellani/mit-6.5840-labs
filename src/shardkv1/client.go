@@ -93,13 +93,17 @@ func (ck *Clerk) prepareClientForKey(key string) {
 		leader = 0
 	}
 	ck.leaders[ck.client.GetGid()] = ck.client.GetLeaderId()
+	if gid != ck.client.GetGid() {
+		ck.client.Log("reconfiguring %d -> %d", ck.client.GetGid(), gid)
+
+	}
 	ck.client.UpdateServers(gid%tester.Tgid(len(srvs)), leader, srvs)
 }
 
 func (ck *Clerk) updateConfig() {
 	config := ck.sck.Query()
 	if config == nil {
-		return
+		panic("failed to download new config")
 	}
 	if ck.config != nil && ck.config.Num == config.Num {
 		return
