@@ -29,6 +29,7 @@ func (rf *Raft) _becomeFollower(term int) {
 		return
 	}
 	rf.Status = STATUS_FOLLOWER
+	rf._resetElectionsTimeout()
 	rf.persist()
 }
 
