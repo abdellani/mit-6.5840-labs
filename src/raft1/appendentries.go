@@ -248,6 +248,11 @@ func (rf *Raft) _checkCommitIdex() {
 	middle := int(math.Floor(float64(len(rf.peers)) / 2))
 	hisim := match[middle]
 	term := rf._termAt(hisim)
+
+	if hisim > rf.CommitIndex && rf._lastEntryTerm() < rf.CurrentTerm {
+		rf._appendNoOpEntry()
+		return
+	}
 	if term != rf.CurrentTerm {
 		// don't commit previous term
 		return

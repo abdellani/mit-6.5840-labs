@@ -115,28 +115,6 @@ func (rf *Raft) _promoteToLeader() {
 		rf.NextIndex[i] = lastIndex + 1
 		rf.MatchIndex[i] = -1
 	}
-	go func(term int) {
-		// time.Sleep(2 * time.Second)
-		timer := time.NewTimer(2 * time.Second)
-		<-timer.C
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
-		if rf.killed() {
-			return
-		}
-		if !rf._isLeader() ||
-			rf.CurrentTerm != term {
-			return
-		}
-		if rf._lastEntryTerm() == term {
-			return
-		}
-		if rf.CommitIndex == rf._lastEntryIndex() {
-			return
-		}
-		rf.Log("adding noop")
-		rf._appendNoOpEntry()
-	}(rf.CurrentTerm)
 
 	rf.Log("promoting to leader (t=%d)", rf.CurrentTerm)
 }
@@ -203,7 +181,7 @@ func (rf *Raft) _appendEntry(entry Log) {
 
 func (rf *Raft) _appendNoOpEntry() {
 	entry := Log{
-		Command: nil,
+		Command: -1,
 		Term:    rf.CurrentTerm,
 	}
 	rf._appendEntry(entry)
