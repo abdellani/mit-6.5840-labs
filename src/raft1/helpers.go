@@ -55,7 +55,7 @@ func (rf *Raft) _voteFor(candidateId int) {
 }
 
 func (rf *Raft) _resetElectionsTimeout() {
-	ms := 300 + (rand.Int63() % 300)
+	ms := 300 + (rand.Int63() % 150)
 	duration := time.Duration(ms) * time.Millisecond
 	rf.ElectionTimeout = time.Now().Add(duration)
 

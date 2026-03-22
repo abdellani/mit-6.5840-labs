@@ -249,7 +249,10 @@ func (rf *Raft) _checkCommitIdex() {
 	hisim := match[middle]
 	term := rf._termAt(hisim)
 
-	if hisim > rf.CommitIndex && rf._lastEntryTerm() < rf.CurrentTerm {
+	if hisim > rf.CommitIndex &&
+		hisim == rf._lastEntryIndex() &&
+		rf._lastEntryTerm() < rf.CurrentTerm &&
+		rf.LastAppendEntryAttempt == 10 {
 		rf._appendNoOpEntry()
 		return
 	}
